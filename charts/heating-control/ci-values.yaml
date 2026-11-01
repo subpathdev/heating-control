@@ -1,0 +1,15 @@
+# Used by CI to render the chart with everything turned on.
+config:
+  broker: tcp://mosquitto:1883
+  rooms:
+    - id: office
+      label: Office
+      trv: trv-office
+      sensor: temperature-sensor-office
+service:
+  type: NodePort
+  nodePort: 30081
+serviceMonitor:
+  enabled: true
+  labels:
+    release: kube-prometheus-stack

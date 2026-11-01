@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "heating-control.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # A fixed MQTT client ID: two pods would keep disconnecting each other.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "heating-control.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "heating-control.labels" . | nindent 8 }}
+      annotations:
+        # The program only reads its config at start.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: heating-control
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          # Both use /healthz, not /readyz: the page must stay reachable during a
+          # broker outage so it can say so, and a restart wouldn't fix the broker.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/heating-control
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}

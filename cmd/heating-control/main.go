@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -11,33 +12,66 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/subpathdev/heating-control/internal/config"
+	"github.com/subpathdev/heating-control/internal/controller"
 	"github.com/subpathdev/heating-control/internal/health"
+	"github.com/subpathdev/heating-control/internal/metrics"
+	"github.com/subpathdev/heating-control/internal/mqtt"
+	"github.com/subpathdev/heating-control/internal/web"
 )
 
 // version is set at build time.
 var version = "dev"
 
 func main() {
+	configPath := flag.String("config", "/etc/heating-control/config.yaml", "path to the config file")
+	flag.Parse()
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	client := mqtt.New(cfg)
+	m := metrics.New(version)
+	ctrl := controller.New(cfg, m.Thermostat(client))
+	client.Start(ctrl)
+	defer client.Close()
+
+	checker := client.Checker()
+	m.AddChecker(checker)
+	m.AddRooms(ctrl)
+
 	mux := http.NewServeMux()
-	health.Register(mux, version)
+	health.Register(mux, version, checker)
+	mux.Handle("GET /metrics", m.Handler())
+	// Probes and scrapes use the pod's IP and stay outside the page's checks.
+	mux.Handle("/", web.Handler(ctrl, cfg.AllowedHosts))
 
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		srv.Shutdown(shutdown)
+		if err := srv.Shutdown(shutdown); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
 	}()
 
 	log.Printf("heating-control %s listening on %s", version, srv.Addr)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+	// ListenAndServe returns as soon as Shutdown starts, so let requests finish.
+	<-shutdownDone
+	ctrl.Wait()
 }

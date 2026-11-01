@@ -1,12 +1,15 @@
-# Tests every PR and push to main. A tag like v0.1.0 also publishes
-# ghcr.io/subpathdev/heating-control:0.1.0.
+# Tests and lints every PR and push to main. A push to main also releases: svu
+# works out the next version from the conventional commits since the last tag,
+# and if there is one, the image and Helm chart are published and the tag and
+# release created.
+# feat: is a minor bump, fix: a patch, and docs:, ci:, chore: and the like don't
+# release. While the version is 0.x, a breaking change is a minor bump too.
 name: ci
 
 on:
   pull_request:
   push:
     branches: [main]
-    tags: ["v*"]
 
 permissions:
   contents: read
@@ -19,38 +22,105 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Check the generated API code matches openapi.yaml
+        run: |
+          go generate ./...
+          git diff --exit-code
       - run: go vet ./...
-      - run: go test ./...
+      - run: go test -race ./...
 
-  # Builds the image on every run, so a broken Dockerfile shows up in the PR.
-  image:
-    needs: test
+  lint:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v5
+        with:
+          version: v4.3.1
+      - run: helm lint charts/heating-control -f charts/heating-control/ci-values.yaml
+      - run: helm template test charts/heating-control -f charts/heating-control/ci-values.yaml
+
+  # Builds without pushing, so a broken Dockerfile shows up in the PR.
+  image:
+    if: github.event_name == 'pull_request'
+    needs: [test, lint, chart]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+
+  release:
+    if: github.event_name == 'push'
+    needs: [test, lint, chart]
+    runs-on: ubuntu-latest
+    # Two quick merges must not work out the same version.
+    concurrency: release
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v4
-      - name: Work out the version
-        id: version
+        with:
+          # svu needs the commits and tags since the last release.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Work out the next version
+        id: next
         run: |
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-            echo "push=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=dev" >> "$GITHUB_OUTPUT"
-            echo "push=false" >> "$GITHUB_OUTPUT"
+          go install github.com/caarlos0/svu/v3@v3.4.1
+          tag="$("$(go env GOPATH)/bin/svu" next)"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Nothing to release, still at $tag."
+            exit 0
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v3
-        if: steps.version.outputs.push == 'true'
+        if: steps.next.outputs.tag != ''
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The image goes first: if it fails there's no tag, and the next push retries.
       - uses: docker/build-push-action@v6
+        if: steps.next.outputs.tag != ''
         with:
           context: .
-          push: ${{ steps.version.outputs.push }}
-          tags: ghcr.io/subpathdev/heating-control:${{ steps.version.outputs.value }}
-          build-args: VERSION=${{ steps.version.outputs.value }}
+          push: true
+          tags: ghcr.io/subpathdev/heating-control:${{ steps.next.outputs.version }}
+          build-args: VERSION=${{ steps.next.outputs.version }}
           labels: org.opencontainers.image.source=https://github.com/subpathdev/heating-control
+      - uses: azure/setup-helm@v5
+        if: steps.next.outputs.tag != ''
+        with:
+          version: v4.3.1
+      - name: Publish the chart
+        if: steps.next.outputs.tag != ''
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm package charts/heating-control --version "$VERSION" --app-version "$VERSION"
+          helm push "heating-control-$VERSION.tgz" oci://ghcr.io/subpathdev/charts
+      - name: Create the release
+        if: steps.next.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.next.outputs.tag }}
+        run: gh release create "$TAG" --target "$GITHUB_SHA" --generate-notes
