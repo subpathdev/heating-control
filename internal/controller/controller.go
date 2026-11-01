@@ -21,7 +21,27 @@ import (
 	"github.com/subpathdev/heating-control/internal/config"
 )
 
-const modeOff = "off"
+// Mode is a thermostat's system mode. The zero value means it hasn't reported.
+type Mode string
+
+// The modes a thermostat can report.
+const (
+	ModeUnknown Mode = ""
+	ModeOff     Mode = "off"
+	ModeAuto    Mode = "auto"
+	ModeHeat    Mode = "heat"
+)
+
+// ParseMode converts a reported system mode. An unknown value is an error, so
+// a typo or firmware change can't be mistaken for a thermostat that is heating.
+func ParseMode(s string) (Mode, error) {
+	switch m := Mode(s); m {
+	case ModeOff, ModeAuto, ModeHeat:
+		return m, nil
+	default:
+		return ModeUnknown, fmt.Errorf("unknown system mode %q", s)
+	}
+}
 
 // ErrUnknownRoom is returned for a room that isn't configured.
 var ErrUnknownRoom = errors.New("unknown room")
@@ -36,21 +56,21 @@ type Thermostat interface {
 
 // ThermostatState is a thermostat's report. Fields it didn't include are nil.
 type ThermostatState struct {
-	Mode             *string
+	Mode             *Mode
 	Setpoint         *float64
 	LocalTemperature *float64
-	Running          *string
+	Heating          *bool
 	FrostProtection  *float64
 }
 
-// RoomStatus is what the page shows for a room.
+// RoomStatus is a room's current state.
 type RoomStatus struct {
-	ID          string   `json:"id"`
-	Label       string   `json:"label"`
-	Temperature *float64 `json:"temperature"`
-	Target      *float64 `json:"target"`
-	Mode        string   `json:"mode"`
-	Heating     bool     `json:"heating"`
+	ID          string
+	Label       string
+	Temperature *float64
+	Target      *float64
+	Mode        Mode
+	Heating     bool
 }
 
 type room struct {
@@ -59,8 +79,8 @@ type room struct {
 	localTemp  *float64
 	target     *float64
 	pending    *float64
-	mode       string
-	running    string
+	mode       Mode
+	heating    bool
 	frost      *float64
 }
 
@@ -99,7 +119,7 @@ func (c *Controller) Rooms() []RoomStatus {
 			Temperature: r.sensorTemp,
 			Target:      r.target,
 			Mode:        r.mode,
-			Heating:     r.running == "heat",
+			Heating:     r.heating,
 		}
 		if s.Temperature == nil {
 			s.Temperature = r.localTemp
@@ -127,7 +147,7 @@ func (c *Controller) SetTarget(id string, target float64) error {
 	}
 	target = math.Round(target*2) / 2
 
-	if r.mode == modeOff {
+	if r.mode == ModeOff {
 		r.pending = &target
 		return nil
 	}
@@ -158,8 +178,8 @@ func (c *Controller) HandleThermostatState(trv string, s ThermostatState) error 
 	if s.Mode != nil {
 		r.mode = *s.Mode
 	}
-	if s.Running != nil {
-		r.running = *s.Running
+	if s.Heating != nil {
+		r.heating = *s.Heating
 	}
 	if s.LocalTemperature != nil {
 		r.localTemp = s.LocalTemperature
@@ -167,12 +187,12 @@ func (c *Controller) HandleThermostatState(trv string, s ThermostatState) error 
 	if s.FrostProtection != nil {
 		r.frost = s.FrostProtection
 	}
-	if s.Setpoint != nil && r.mode != modeOff && !r.isFrost(*s.Setpoint) {
+	if s.Setpoint != nil && r.mode != ModeOff && !r.isFrost(*s.Setpoint) {
 		// Someone may have turned the knob, so the thermostat wins.
 		r.target = s.Setpoint
 	}
 
-	if r.pending != nil && r.mode != "" && r.mode != modeOff {
+	if r.pending != nil && r.mode != ModeUnknown && r.mode != ModeOff {
 		if err := c.thermostat.SetTarget(r.cfg.TRV, *r.pending); err != nil {
 			return err
 		}

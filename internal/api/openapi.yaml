@@ -1,0 +1,126 @@
+openapi: 3.0.3
+info:
+  title: heating-control
+  description: >-
+    The contract between the heating-control backend and its page. Go types and
+    the server interface are generated from this file, so change it first and
+    run `go generate ./...`.
+  version: 0.1.0
+paths:
+  /api/rooms:
+    get:
+      operationId: listRooms
+      summary: List the rooms and the allowed target range.
+      responses:
+        "200":
+          description: The configured rooms, in configured order.
+          headers:
+            Cache-Control:
+              description: Always no-store, so the page never shows old values.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomList"
+  /api/rooms/{id}/target:
+    post:
+      operationId: setRoomTarget
+      summary: Change a room's target temperature.
+      description: >-
+        The target is rounded to 0.5 °C. While a thermostat is off the target is
+        held and sent once it heats again, because writing a setpoint would
+        switch it back on. Requests from other websites get a 403.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The room's id from the room list.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetTargetRequest"
+      responses:
+        "204":
+          description: The target was sent, or held while the thermostat is off.
+        "400":
+          description: The body is invalid or the target is outside the allowed range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The room doesn't exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: The thermostat couldn't be reached through the broker.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  schemas:
+    RoomList:
+      type: object
+      required: [rooms, minTarget, maxTarget]
+      properties:
+        rooms:
+          type: array
+          items:
+            $ref: "#/components/schemas/Room"
+        minTarget:
+          type: number
+          format: double
+          description: The lowest target allowed, in °C.
+        maxTarget:
+          type: number
+          format: double
+          description: The highest target allowed, in °C.
+    Room:
+      type: object
+      required: [id, label, temperature, target, mode, heating]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+        temperature:
+          type: number
+          format: double
+          nullable: true
+          description: The room's temperature in °C, or null until it has been reported.
+        target:
+          type: number
+          format: double
+          nullable: true
+          description: The chosen target in °C, or null until it is known.
+        mode:
+          $ref: "#/components/schemas/Mode"
+        heating:
+          type: boolean
+          description: Whether the thermostat is calling for heat right now.
+    Mode:
+      type: string
+      enum: [unknown, "off", auto, heat]
+      description: The thermostat's mode. unknown means it hasn't reported yet.
+    SetTargetRequest:
+      type: object
+      required: [target]
+      properties:
+        target:
+          type: number
+          format: double
+          description: The new target in °C, within minTarget and maxTarget.
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string

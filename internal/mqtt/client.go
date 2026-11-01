@@ -151,13 +151,23 @@ func parseThermostat(payload []byte) (controller.ThermostatState, error) {
 	if err := json.Unmarshal(payload, &m); err != nil {
 		return controller.ThermostatState{}, err
 	}
-	return controller.ThermostatState{
-		Mode:             m.SystemMode,
+	s := controller.ThermostatState{
 		Setpoint:         m.Setpoint,
 		LocalTemperature: m.LocalTemp,
-		Running:          m.RunningState,
 		FrostProtection:  m.FrostProtection,
-	}, nil
+	}
+	if m.SystemMode != nil {
+		mode, err := controller.ParseMode(*m.SystemMode)
+		if err != nil {
+			return controller.ThermostatState{}, err
+		}
+		s.Mode = &mode
+	}
+	if m.RunningState != nil {
+		heating := *m.RunningState == "heat"
+		s.Heating = &heating
+	}
+	return s, nil
 }
 
 func parseTemperature(payload []byte) (*float64, error) {

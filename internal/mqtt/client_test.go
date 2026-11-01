@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/subpathdev/heating-control/internal/controller"
 )
 
 type fakeConnection bool
@@ -46,8 +48,24 @@ func TestParseThermostat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *s.Mode != "off" || *s.Setpoint != 7 || *s.LocalTemperature != 22 || *s.Running != "idle" || *s.FrostProtection != 7 {
+	if *s.Mode != controller.ModeOff || *s.Setpoint != 7 || *s.LocalTemperature != 22 || *s.Heating || *s.FrostProtection != 7 {
 		t.Fatalf("parsed %+v", s)
+	}
+}
+
+func TestParseThermostatRejectsUnknownMode(t *testing.T) {
+	if _, err := parseThermostat([]byte(`{"system_mode":"Off"}`)); err == nil {
+		t.Fatal("want an error")
+	}
+}
+
+func TestParseThermostatHeating(t *testing.T) {
+	s, err := parseThermostat([]byte(`{"running_state":"heat"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Heating == nil || !*s.Heating {
+		t.Fatalf("heating = %v, want true", s.Heating)
 	}
 }
 

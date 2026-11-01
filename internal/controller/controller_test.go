@@ -33,7 +33,7 @@ func newController(t *testing.T) (*Controller, *fakeThermostat) {
 
 func ptr[T any](v T) *T { return &v }
 
-func state(mode string, setpoint float64) ThermostatState {
+func state(mode Mode, setpoint float64) ThermostatState {
 	return ThermostatState{Mode: &mode, Setpoint: &setpoint}
 }
 
@@ -183,5 +183,30 @@ func TestSensorTemperatureWinsOverLocal(t *testing.T) {
 	c.HandleRoomTemperature("sensor-office", 21)
 	if got := c.Rooms()[0].Temperature; got == nil || *got != 21 {
 		t.Fatalf("temperature = %v, want the sensor's 21", got)
+	}
+}
+
+func TestParseMode(t *testing.T) {
+	for _, valid := range []Mode{ModeOff, ModeAuto, ModeHeat} {
+		if got, err := ParseMode(string(valid)); err != nil || got != valid {
+			t.Errorf("ParseMode(%q) = %q, %v", valid, got, err)
+		}
+	}
+	for _, invalid := range []string{"", "Off", "cool"} {
+		if _, err := ParseMode(invalid); err == nil {
+			t.Errorf("ParseMode(%q): want an error", invalid)
+		}
+	}
+}
+
+func TestPendingWaitsForAKnownMode(t *testing.T) {
+	c, f := newController(t)
+	report(t, c, state("off", 7))
+	if err := c.SetTarget("office", 22); err != nil {
+		t.Fatal(err)
+	}
+	report(t, c, ThermostatState{LocalTemperature: ptr(20.0)})
+	if len(f.targets) != 0 {
+		t.Fatalf("sent %v while still off", f.targets)
 	}
 }

@@ -21,6 +21,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Check the generated API code matches openapi.yaml
+        run: |
+          go generate ./...
+          git diff --exit-code
       - run: go vet ./...
       - run: go test ./...
 

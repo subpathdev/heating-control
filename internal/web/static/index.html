@@ -63,7 +63,7 @@
   const signed = s => (s > 0 ? '+' : '−') + Math.abs(s);
 
   function describe(room) {
-    if (room.mode === '') return 'Waiting for the thermostat';
+    if (room.mode === 'unknown') return 'Waiting for the thermostat';
     if (room.mode === 'off') return 'Not heating: the thermostat is off';
     return room.heating ? 'Heating' : 'Not heating right now';
   }
@@ -128,7 +128,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw new Error((await res.json()).message);
       errorEl.textContent = '';
     } catch (e) {
       errorEl.textContent = 'Not changed: ' + e.message;
