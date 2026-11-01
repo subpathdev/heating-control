@@ -256,7 +256,7 @@ components:
       properties:
         minutes:
           type: integer
-          enum: [15, 30, 60]
+          enum: [5, 15, 30, 60]
           description: How long to air the room.
     SetTargetRequest:
       type: object

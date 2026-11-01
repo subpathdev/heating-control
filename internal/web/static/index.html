@@ -50,7 +50,7 @@
   .note { color: var(--muted); font-size: .9rem; margin-top: 8px; }
   .note:empty { display: none; }
   .note.problem { color: var(--error); }
-  .airing { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
+  .airing { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px; }
   .airing button.stop { grid-column: 1 / -1; background: var(--accent); color: var(--card); font-weight: 600; }
   [hidden] { display: none !important; }
 </style>
@@ -78,7 +78,7 @@
     errorEl.textContent = commandError || connectionError;
   }
 
-  const airingMinutes = [15, 30, 60];
+  const airingMinutes = [5, 15, 30, 60];
 
   const clock = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const degrees = v => v == null ? '–' : v.toFixed(1) + ' °C';
@@ -140,7 +140,7 @@
     airing.className = 'airing';
     const start = airingMinutes.map(minutes => {
       const b = document.createElement('button');
-      b.textContent = 'Airing ' + minutes;
+      b.textContent = 'Air ' + minutes;
       b.setAttribute('aria-label', 'Air ' + room.label + ' for ' + minutes + ' minutes');
       b.addEventListener('click', () => startAiring(room.id, minutes));
       airing.append(b);

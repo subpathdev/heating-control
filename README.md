@@ -6,7 +6,7 @@ A small web page to adjust the heating per room from a phone on the home network
 
 ## Airing
 
-"Airing 15/30/60" sends `system_mode: off`. When the time is up, or on "Heat again", the room gets back the mode and target from before.
+"Air 5/15/30/60" sends `system_mode: off` for that many minutes, with 5 for a quick Stoßlüften. When the time is up, or on "Heat again", the room gets back the mode and target from before.
 
 The service keeps no saved state, so a restart during airing forgets it: **that room stays off until someone taps "Heat again"**. A target waiting to be sent is lost too. The thermostat's own frost protection still applies.
 

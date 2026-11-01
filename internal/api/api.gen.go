@@ -68,6 +68,7 @@ func (e Mode) Valid() bool {
 const (
 	N15 StartAiringRequestMinutes = 15
 	N30 StartAiringRequestMinutes = 30
+	N5  StartAiringRequestMinutes = 5
 	N60 StartAiringRequestMinutes = 60
 )
 
@@ -77,6 +78,8 @@ func (e StartAiringRequestMinutes) Valid() bool {
 	case N15:
 		return true
 	case N30:
+		return true
+	case N5:
 		return true
 	case N60:
 		return true
