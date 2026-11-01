@@ -92,7 +92,7 @@
   // Thermostats report at least about every 25 minutes.
   const staleAfterMs = 2 * 3600 * 1000;
 
-  const clock = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const clock = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
   const degrees = v => v == null ? '–' : v.toFixed(1) + ' °C';
   const signed = s => (s > 0 ? '+' : '−') + Math.abs(s);
   const inRange = v => v >= data.minTarget && v <= data.maxTarget;
