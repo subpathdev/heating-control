@@ -20,7 +20,7 @@ type Checker interface {
 // responds, so a broker outage doesn't restart the pod. /readyz runs checkers.
 func Register(mux *http.ServeMux, version string, checkers ...Checker) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintln(w, version)
+		_, _ = fmt.Fprintln(w, version)
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), checkTimeout)
@@ -37,6 +37,6 @@ func Register(mux *http.ServeMux, version string, checkers ...Checker) {
 			body += fmt.Sprintf("%s: ok\n", c.Name())
 		}
 		w.WriteHeader(status)
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	})
 }
