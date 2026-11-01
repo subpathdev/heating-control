@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: false
@@ -97,7 +97,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # The image goes first: if it fails there's no tag, and the next push retries.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         if: steps.next.outputs.tag != ''
         with:
           context: .
