@@ -43,7 +43,7 @@ func New(cfg *config.Config) *Client {
 func (c *Client) Start(sink Sink) {
 	opts := paho.NewClientOptions().
 		AddBroker(c.cfg.Broker).
-		SetClientID("heating-control").
+		SetClientID(c.cfg.ClientID).
 		SetAutoReconnect(true).
 		SetConnectRetry(true).
 		SetConnectRetryInterval(5 * time.Second).
@@ -65,9 +65,16 @@ func (c *Client) Checker() health.Checker {
 	return connectionChecker{conn: c.client}
 }
 
-// SetTarget implements controller.Thermostat.
-func (c *Client) SetTarget(trv string, target float64) error {
-	return c.publish(trv, "set", map[string]any{"occupied_heating_setpoint": target})
+// Apply implements controller.Thermostat.
+func (c *Client) Apply(trv string, cmd controller.Command) error {
+	payload := map[string]any{}
+	if cmd.Mode != nil {
+		payload["system_mode"] = *cmd.Mode
+	}
+	if cmd.Target != nil {
+		payload["occupied_heating_setpoint"] = *cmd.Target
+	}
+	return c.publish(trv, "set", payload)
 }
 
 // publish refuses to send while disconnected. During an outage paho would keep

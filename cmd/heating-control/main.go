@@ -17,6 +17,7 @@ import (
 	"github.com/subpathdev/heating-control/internal/health"
 	"github.com/subpathdev/heating-control/internal/metrics"
 	"github.com/subpathdev/heating-control/internal/mqtt"
+	"github.com/subpathdev/heating-control/internal/store"
 	"github.com/subpathdev/heating-control/internal/web"
 )
 
@@ -37,7 +38,7 @@ func main() {
 
 	client := mqtt.New(cfg)
 	m := metrics.New(version)
-	ctrl := controller.New(cfg, m.Thermostat(client))
+	ctrl := controller.New(cfg, m.Thermostat(client), store.New(cfg.StateFile))
 	client.Start(ctrl)
 	defer client.Close()
 
@@ -49,13 +50,19 @@ func main() {
 	health.Register(mux, version, checker)
 	mux.Handle("GET /metrics", m.Handler())
 	// Probes and scrapes use the pod's IP and stay outside the page's checks.
-	mux.Handle("/", web.Handler(ctrl, cfg.AllowedHosts))
+	mux.Handle("/", web.Handler(ctrl, checker, cfg.AllowedHosts))
 
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	controllerDone := make(chan struct{})
+	go func() {
+		defer close(controllerDone)
+		ctrl.Run(ctx)
+	}()
+
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
@@ -73,5 +80,5 @@ func main() {
 	}
 	// ListenAndServe returns as soon as Shutdown starts, so let requests finish.
 	<-shutdownDone
-	ctrl.Wait()
+	<-controllerDone
 }

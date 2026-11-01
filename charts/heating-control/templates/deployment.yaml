@@ -25,6 +25,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -55,7 +56,12 @@ spec:
             - name: config
               mountPath: /etc/heating-control
               readOnly: true
+            - name: state
+              mountPath: {{ dir .Values.config.stateFile }}
       volumes:
         - name: config
           configMap:
             name: {{ .Release.Name }}
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}

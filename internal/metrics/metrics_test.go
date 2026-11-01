@@ -18,7 +18,7 @@ func (f fakeChecker) Check(context.Context) error { return f.err }
 
 type fakeThermostat struct{ err error }
 
-func (f fakeThermostat) SetTarget(string, float64) error { return f.err }
+func (f fakeThermostat) Apply(string, controller.Command) error { return f.err }
 
 type fakeRooms []controller.RoomStatus
 
@@ -62,11 +62,12 @@ func TestCheckUp(t *testing.T) {
 func TestCommandsAreCounted(t *testing.T) {
 	m := New("dev")
 	failed := errors.New("down")
+	target := 20.0
 
-	if err := m.Thermostat(fakeThermostat{}).SetTarget("trv-office", 20); err != nil {
+	if err := m.Thermostat(fakeThermostat{}).Apply("trv-office", controller.Command{Target: &target}); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Thermostat(fakeThermostat{err: failed}).SetTarget("trv-office", 20); !errors.Is(err, failed) {
+	if err := m.Thermostat(fakeThermostat{err: failed}).Apply("trv-office", controller.Command{Target: &target}); !errors.Is(err, failed) {
 		t.Fatalf("the error must be passed on, got %v", err)
 	}
 
@@ -78,11 +79,17 @@ func TestCommandsAreCounted(t *testing.T) {
 func TestRoomTargets(t *testing.T) {
 	target := 20.5
 	m := New("dev")
-	m.AddRooms(fakeRooms{{ID: "office", Target: &target}, {ID: "bedroom"}})
+	m.AddRooms(fakeRooms{
+		{ID: "office", Target: &target, AiringState: controller.AiringActive},
+		{ID: "bedroom", AiringState: controller.AiringNone, CommandFailed: true},
+	})
 
 	body := scrape(t, m)
 	wantLine(t, body, `heating_control_room_target_celsius{room="office"} 20.5`)
-	if strings.Contains(body, `room="bedroom"`) {
+	wantLine(t, body, `heating_control_room_airing{room="office"} 1`)
+	wantLine(t, body, `heating_control_room_airing{room="bedroom"} 0`)
+	wantLine(t, body, `heating_control_room_command_failed{room="bedroom"} 1`)
+	if strings.Contains(body, `heating_control_room_target_celsius{room="bedroom"}`) {
 		t.Error("a room with an unknown target must have no series")
 	}
 }

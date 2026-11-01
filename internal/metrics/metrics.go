@@ -87,13 +87,13 @@ type countingThermostat struct {
 	commands *prometheus.CounterVec
 }
 
-func (t countingThermostat) SetTarget(trv string, target float64) error {
-	err := t.next.SetTarget(trv, target)
+func (t countingThermostat) Apply(trv string, cmd controller.Command) error {
+	err := t.next.Apply(trv, cmd)
 	result := "ok"
 	if err != nil {
 		result = "error"
 	}
-	t.commands.WithLabelValues(trv, "set_target", result).Inc()
+	t.commands.WithLabelValues(trv, cmd.Kind(), result).Inc()
 	return err
 }
 
@@ -103,16 +103,41 @@ var targetDesc = prometheus.NewDesc(
 	[]string{"room"}, nil,
 )
 
+var airingDesc = prometheus.NewDesc(
+	"heating_control_room_airing",
+	"1 while a room is airing, including until the thermostat confirms it's back on.",
+	[]string{"room"}, nil,
+)
+
+var commandFailedDesc = prometheus.NewDesc(
+	"heating_control_room_command_failed",
+	"1 while the thermostat hasn't confirmed a command to turn off or heat again.",
+	[]string{"room"}, nil,
+)
+
 type roomCollector struct {
 	rooms Rooms
 }
 
-func (c roomCollector) Describe(ch chan<- *prometheus.Desc) { ch <- targetDesc }
+func (c roomCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- targetDesc
+	ch <- airingDesc
+	ch <- commandFailedDesc
+}
 
 func (c roomCollector) Collect(ch chan<- prometheus.Metric) {
 	for _, r := range c.rooms.Rooms() {
 		if r.Target != nil {
 			ch <- prometheus.MustNewConstMetric(targetDesc, prometheus.GaugeValue, *r.Target, r.ID)
 		}
+		ch <- prometheus.MustNewConstMetric(airingDesc, prometheus.GaugeValue, boolValue(r.AiringState != controller.AiringNone), r.ID)
+		ch <- prometheus.MustNewConstMetric(commandFailedDesc, prometheus.GaugeValue, boolValue(r.CommandFailed), r.ID)
 	}
+}
+
+func boolValue(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
 }

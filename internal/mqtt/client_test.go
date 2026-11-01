@@ -27,14 +27,16 @@ func TestConnectionChecker(t *testing.T) {
 // fakePaho embeds the interface, so only what publish uses is implemented.
 type fakePaho struct {
 	paho.Client
-	open   bool
-	topics []string
+	open    bool
+	topics  []string
+	payload []byte
 }
 
 func (f *fakePaho) IsConnectionOpen() bool { return f.open }
 
-func (f *fakePaho) Publish(topic string, _ byte, _ bool, _ any) paho.Token {
+func (f *fakePaho) Publish(topic string, _ byte, _ bool, payload any) paho.Token {
 	f.topics = append(f.topics, topic)
+	f.payload, _ = payload.([]byte)
 	return fakePahoToken{}
 }
 
@@ -43,11 +45,12 @@ type fakePahoToken struct{ paho.Token }
 func (fakePahoToken) WaitTimeout(time.Duration) bool { return true }
 func (fakePahoToken) Error() error                   { return nil }
 
-func TestSetTargetFailsFastWhileDisconnected(t *testing.T) {
+func TestApplyFailsFastWhileDisconnected(t *testing.T) {
 	f := &fakePaho{}
 	c := &Client{base: "zigbee2mqtt", client: f}
+	target := 20.0
 
-	if err := c.SetTarget("trv-office", 20); !errors.Is(err, errNotConnected) {
+	if err := c.Apply("trv-office", controller.Command{Target: &target}); !errors.Is(err, errNotConnected) {
 		t.Fatalf("err = %v, want errNotConnected", err)
 	}
 	if len(f.topics) != 0 {
@@ -55,7 +58,7 @@ func TestSetTargetFailsFastWhileDisconnected(t *testing.T) {
 	}
 
 	f.open = true
-	if err := c.SetTarget("trv-office", 20); err != nil {
+	if err := c.Apply("trv-office", controller.Command{Target: &target}); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.topics) != 1 || f.topics[0] != "zigbee2mqtt/trv-office/set" {
@@ -135,5 +138,31 @@ func TestParseTemperature(t *testing.T) {
 	got, err = parseTemperature([]byte(`{"humidity":50}`))
 	if err != nil || got != nil {
 		t.Fatalf("got %v, %v", got, err)
+	}
+}
+
+func TestApplyPayload(t *testing.T) {
+	heat := controller.ModeHeat
+	target := 20.5
+	tests := []struct {
+		name string
+		cmd  controller.Command
+		want string
+	}{
+		{"target", controller.Command{Target: &target}, `{"occupied_heating_setpoint":20.5}`},
+		{"mode", controller.Command{Mode: &heat}, `{"system_mode":"heat"}`},
+		{"both", controller.Command{Mode: &heat, Target: &target}, `{"occupied_heating_setpoint":20.5,"system_mode":"heat"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakePaho{open: true}
+			c := &Client{base: "zigbee2mqtt", client: f}
+			if err := c.Apply("trv-office", tt.cmd); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(f.payload); got != tt.want {
+				t.Fatalf("payload = %s, want %s", got, tt.want)
+			}
+		})
 	}
 }

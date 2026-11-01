@@ -5,7 +5,7 @@ info:
     The contract between the heating-control backend and its page. Go types and
     the server interface are generated from this file, so change it first and
     run `go generate ./...`.
-  version: 0.1.0
+  version: 0.2.0
 paths:
   /api/rooms:
     get:
@@ -40,9 +40,10 @@ paths:
       operationId: setRoomTarget
       summary: Change a room's target temperature.
       description: >-
-        The target is rounded to 0.5 °C. While a thermostat is off, or hasn't
-        reported yet, the target is held and sent once it heats again, because
-        writing a setpoint could switch it back on.
+        The target is rounded to 0.5 °C. A 202 means the target was accepted, not
+        that it has arrived: follow targetState in the room list. It's held while
+        the room is airing or the thermostat is off or hasn't reported, because
+        writing a setpoint would switch a thermostat that is off back on.
       parameters:
         - name: id
           in: path
@@ -57,8 +58,8 @@ paths:
             schema:
               $ref: "#/components/schemas/SetTargetRequest"
       responses:
-        "204":
-          description: The target was sent, or held until the thermostat can take it.
+        "202":
+          description: The target was accepted.
         "400":
           description: The body is invalid or the target is outside the allowed range.
           content:
@@ -83,8 +84,82 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-        "502":
-          description: The thermostat couldn't be reached through the broker.
+  /api/rooms/{id}/airing:
+    post:
+      operationId: startRoomAiring
+      summary: Stop heating a room because a window is open.
+      description: >-
+        When the time is up, heating comes back with the mode and target from
+        before airing. Calling this again during airing sets a new end time. A 202
+        means airing was accepted: follow airingState in the room list.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The room's id from the room list.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartAiringRequest"
+      responses:
+        "202":
+          description: Airing was accepted.
+        "400":
+          description: The body is invalid or minutes isn't one of the allowed values.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: The request came from another website, or by an unknown host name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The room doesn't exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The server failed to write the response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: stopRoomAiring
+      summary: End airing now and heat again.
+      description: Does nothing if the room isn't airing.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The room's id from the room list.
+          schema:
+            type: string
+      responses:
+        "202":
+          description: Accepted.
+        "403":
+          description: The request came from another website, or by an unknown host name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The room doesn't exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The server failed to write the response.
           content:
             application/json:
               schema:
@@ -93,8 +168,13 @@ components:
   schemas:
     RoomList:
       type: object
-      required: [rooms, minTarget, maxTarget]
+      required: [rooms, connected, minTarget, maxTarget]
       properties:
+        connected:
+          type: boolean
+          description: >-
+            Whether the backend is connected to the broker. While it isn't, nothing
+            can be sent and the rooms' values may be out of date.
         rooms:
           type: array
           items:
@@ -109,7 +189,7 @@ components:
           description: The highest target allowed, in °C.
     Room:
       type: object
-      required: [id, label, temperature, target, mode, heating]
+      required: [id, label, temperature, target, targetState, mode, heating, airingState, airingUntil, lastSeen, commandFailed]
       properties:
         id:
           type: string
@@ -130,10 +210,52 @@ components:
         heating:
           type: boolean
           description: Whether the thermostat is calling for heat right now.
+        targetState:
+          $ref: "#/components/schemas/TargetState"
+        airingState:
+          $ref: "#/components/schemas/AiringState"
+        airingUntil:
+          type: string
+          format: date-time
+          nullable: true
+          description: When airing ends and heating comes back, or null if not airing.
+        lastSeen:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the thermostat last reported, or null if not since the backend started.
+        commandFailed:
+          type: boolean
+          description: >-
+            Whether the thermostat hasn't confirmed a command to turn off or heat
+            again. The backend keeps trying, more slowly.
     Mode:
       type: string
       enum: [unknown, "off", auto, heat]
       description: The thermostat's mode. unknown means it hasn't reported yet.
+    TargetState:
+      type: string
+      enum: [applied, sending, held, failed]
+      description: >-
+        applied means the thermostat confirmed the target. sending means it's on
+        its way. held means it waits until the thermostat can take it. failed means
+        the thermostat never confirmed the last change, so target shows what it
+        reports instead.
+    AiringState:
+      type: string
+      enum: [none, starting, active, restoring]
+      description: >-
+        none means not airing. starting means airing was accepted and the thermostat
+        hasn't confirmed it's off. active means it's off. restoring means airing has
+        ended and the thermostat hasn't confirmed it's heating again.
+    StartAiringRequest:
+      type: object
+      required: [minutes]
+      properties:
+        minutes:
+          type: integer
+          enum: [15, 30, 60]
+          description: How long to air the room.
     SetTargetRequest:
       type: object
       required: [target]

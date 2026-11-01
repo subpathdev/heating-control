@@ -18,6 +18,13 @@ config:
   rooms: []
   # Host names the page is reached by. IP addresses and localhost always work.
   allowedHosts: []
+  stateFile: /var/lib/heating-control/state.json
+
+# Keeps airing end times and held targets across restarts.
+persistence:
+  size: 16Mi
+  # Empty uses the cluster's default storage class.
+  storageClass: ""
 
 service:
   type: ClusterIP
