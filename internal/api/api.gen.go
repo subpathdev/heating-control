@@ -11,9 +11,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/oapi-codegen/runtime"
 )
+
+// Defines values for AiringState.
+const (
+	Active    AiringState = "active"
+	None      AiringState = "none"
+	Restoring AiringState = "restoring"
+	Starting  AiringState = "starting"
+)
+
+// Valid indicates whether the value is a known member of the AiringState enum.
+func (e AiringState) Valid() bool {
+	switch e {
+	case Active:
+		return true
+	case None:
+		return true
+	case Restoring:
+		return true
+	case Starting:
+		return true
+	default:
+		return false
+	}
+}
 
 // Defines values for Mode.
 const (
@@ -39,6 +64,54 @@ func (e Mode) Valid() bool {
 	}
 }
 
+// Defines values for StartAiringRequestMinutes.
+const (
+	N15 StartAiringRequestMinutes = 15
+	N30 StartAiringRequestMinutes = 30
+	N60 StartAiringRequestMinutes = 60
+)
+
+// Valid indicates whether the value is a known member of the StartAiringRequestMinutes enum.
+func (e StartAiringRequestMinutes) Valid() bool {
+	switch e {
+	case N15:
+		return true
+	case N30:
+		return true
+	case N60:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TargetState.
+const (
+	Applied TargetState = "applied"
+	Failed  TargetState = "failed"
+	Held    TargetState = "held"
+	Sending TargetState = "sending"
+)
+
+// Valid indicates whether the value is a known member of the TargetState enum.
+func (e TargetState) Valid() bool {
+	switch e {
+	case Applied:
+		return true
+	case Failed:
+		return true
+	case Held:
+		return true
+	case Sending:
+		return true
+	default:
+		return false
+	}
+}
+
+// AiringState none means not airing. starting means airing was accepted and the thermostat hasn't confirmed it's off. active means it's off. restoring means airing has ended and the thermostat hasn't confirmed it's heating again.
+type AiringState string
+
 // Error defines model for Error.
 type Error struct {
 	Message string `json:"message"`
@@ -49,10 +122,22 @@ type Mode string
 
 // Room defines model for Room.
 type Room struct {
+	// AiringState none means not airing. starting means airing was accepted and the thermostat hasn't confirmed it's off. active means it's off. restoring means airing has ended and the thermostat hasn't confirmed it's heating again.
+	AiringState AiringState `json:"airingState"`
+
+	// AiringUntil When airing ends and heating comes back, or null if not airing.
+	AiringUntil *time.Time `json:"airingUntil"`
+
+	// CommandFailed Whether the thermostat hasn't confirmed a command to turn off or heat again. The backend keeps trying, more slowly.
+	CommandFailed bool `json:"commandFailed"`
+
 	// Heating Whether the thermostat is calling for heat right now.
 	Heating bool   `json:"heating"`
 	Id      string `json:"id"`
 	Label   string `json:"label"`
+
+	// LastSeen When the thermostat last reported, or null if not since the backend started.
+	LastSeen *time.Time `json:"lastSeen"`
 
 	// Mode The thermostat's mode. unknown means it hasn't reported yet.
 	Mode Mode `json:"mode"`
@@ -60,12 +145,18 @@ type Room struct {
 	// Target The chosen target in °C, or null until it is known.
 	Target *float64 `json:"target"`
 
+	// TargetState applied means the thermostat confirmed the target. sending means it's on its way. held means it waits until the thermostat can take it. failed means the thermostat never confirmed the last change, so target shows what it reports instead.
+	TargetState TargetState `json:"targetState"`
+
 	// Temperature The room's temperature in °C, or null until it has been reported.
 	Temperature *float64 `json:"temperature"`
 }
 
 // RoomList defines model for RoomList.
 type RoomList struct {
+	// Connected Whether the backend is connected to the broker. While it isn't, nothing can be sent and the rooms' values may be out of date.
+	Connected bool `json:"connected"`
+
 	// MaxTarget The highest target allowed, in °C.
 	MaxTarget float64 `json:"maxTarget"`
 
@@ -80,6 +171,21 @@ type SetTargetRequest struct {
 	Target float64 `json:"target"`
 }
 
+// StartAiringRequest defines model for StartAiringRequest.
+type StartAiringRequest struct {
+	// Minutes How long to air the room.
+	Minutes StartAiringRequestMinutes `json:"minutes"`
+}
+
+// StartAiringRequestMinutes How long to air the room.
+type StartAiringRequestMinutes int
+
+// TargetState applied means the thermostat confirmed the target. sending means it's on its way. held means it waits until the thermostat can take it. failed means the thermostat never confirmed the last change, so target shows what it reports instead.
+type TargetState string
+
+// StartRoomAiringJSONRequestBody defines body for StartRoomAiring for application/json ContentType.
+type StartRoomAiringJSONRequestBody = StartAiringRequest
+
 // SetRoomTargetJSONRequestBody defines body for SetRoomTarget for application/json ContentType.
 type SetRoomTargetJSONRequestBody = SetTargetRequest
 
@@ -88,6 +194,12 @@ type ServerInterface interface {
 	// ListRooms List the rooms and the allowed target range.
 	// (GET /api/rooms)
 	ListRooms(w http.ResponseWriter, r *http.Request)
+	// StopRoomAiring End airing now and heat again.
+	// (DELETE /api/rooms/{id}/airing)
+	StopRoomAiring(w http.ResponseWriter, r *http.Request, id string)
+	// StartRoomAiring Stop heating a room because a window is open.
+	// (POST /api/rooms/{id}/airing)
+	StartRoomAiring(w http.ResponseWriter, r *http.Request, id string)
 	// SetRoomTarget Change a room's target temperature.
 	// (POST /api/rooms/{id}/target)
 	SetRoomTarget(w http.ResponseWriter, r *http.Request, id string)
@@ -107,6 +219,58 @@ func (siw *ServerInterfaceWrapper) ListRooms(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListRooms(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// StopRoomAiring operation middleware
+func (siw *ServerInterfaceWrapper) StopRoomAiring(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.StopRoomAiring(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// StartRoomAiring operation middleware
+func (siw *ServerInterfaceWrapper) StartRoomAiring(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.StartRoomAiring(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -264,6 +428,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/api/rooms", wrapper.ListRooms)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/rooms/{id}/target", wrapper.SetRoomTarget)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/api/rooms/{id}/airing", wrapper.StopRoomAiring)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/api/rooms/{id}/airing", wrapper.StartRoomAiring)
 
 	return m
 }
@@ -327,6 +493,137 @@ func (response ListRooms500JSONResponse) VisitListRoomsResponse(w http.ResponseW
 	return err
 }
 
+type StopRoomAiringRequestObject struct {
+	Id string `json:"id"`
+}
+
+type StopRoomAiringResponseObject interface {
+	VisitStopRoomAiringResponse(w http.ResponseWriter) error
+}
+
+type StopRoomAiring202Response struct {
+}
+
+func (response StopRoomAiring202Response) VisitStopRoomAiringResponse(w http.ResponseWriter) error {
+	w.WriteHeader(202)
+	return nil
+}
+
+type StopRoomAiring403JSONResponse Error
+
+func (response StopRoomAiring403JSONResponse) VisitStopRoomAiringResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StopRoomAiring404JSONResponse Error
+
+func (response StopRoomAiring404JSONResponse) VisitStopRoomAiringResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StopRoomAiring500JSONResponse Error
+
+func (response StopRoomAiring500JSONResponse) VisitStopRoomAiringResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartRoomAiringRequestObject struct {
+	Id   string `json:"id"`
+	Body *StartRoomAiringJSONRequestBody
+}
+
+type StartRoomAiringResponseObject interface {
+	VisitStartRoomAiringResponse(w http.ResponseWriter) error
+}
+
+type StartRoomAiring202Response struct {
+}
+
+func (response StartRoomAiring202Response) VisitStartRoomAiringResponse(w http.ResponseWriter) error {
+	w.WriteHeader(202)
+	return nil
+}
+
+type StartRoomAiring400JSONResponse Error
+
+func (response StartRoomAiring400JSONResponse) VisitStartRoomAiringResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartRoomAiring403JSONResponse Error
+
+func (response StartRoomAiring403JSONResponse) VisitStartRoomAiringResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartRoomAiring404JSONResponse Error
+
+func (response StartRoomAiring404JSONResponse) VisitStartRoomAiringResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type StartRoomAiring500JSONResponse Error
+
+func (response StartRoomAiring500JSONResponse) VisitStartRoomAiringResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type SetRoomTargetRequestObject struct {
 	Id   string `json:"id"`
 	Body *SetRoomTargetJSONRequestBody
@@ -336,11 +633,11 @@ type SetRoomTargetResponseObject interface {
 	VisitSetRoomTargetResponse(w http.ResponseWriter) error
 }
 
-type SetRoomTarget204Response struct {
+type SetRoomTarget202Response struct {
 }
 
-func (response SetRoomTarget204Response) VisitSetRoomTargetResponse(w http.ResponseWriter) error {
-	w.WriteHeader(204)
+func (response SetRoomTarget202Response) VisitSetRoomTargetResponse(w http.ResponseWriter) error {
+	w.WriteHeader(202)
 	return nil
 }
 
@@ -400,25 +697,17 @@ func (response SetRoomTarget500JSONResponse) VisitSetRoomTargetResponse(w http.R
 	return err
 }
 
-type SetRoomTarget502JSONResponse Error
-
-func (response SetRoomTarget502JSONResponse) VisitSetRoomTargetResponse(w http.ResponseWriter) error {
-
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
-		return err
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(502)
-	_, err := buf.WriteTo(w)
-	return err
-}
-
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// ListRooms List the rooms and the allowed target range.
 	// (GET /api/rooms)
 	ListRooms(ctx context.Context, request ListRoomsRequestObject) (ListRoomsResponseObject, error)
+	// StopRoomAiring End airing now and heat again.
+	// (DELETE /api/rooms/{id}/airing)
+	StopRoomAiring(ctx context.Context, request StopRoomAiringRequestObject) (StopRoomAiringResponseObject, error)
+	// StartRoomAiring Stop heating a room because a window is open.
+	// (POST /api/rooms/{id}/airing)
+	StartRoomAiring(ctx context.Context, request StartRoomAiringRequestObject) (StartRoomAiringResponseObject, error)
 	// SetRoomTarget Change a room's target temperature.
 	// (POST /api/rooms/{id}/target)
 	SetRoomTarget(ctx context.Context, request SetRoomTargetRequestObject) (SetRoomTargetResponseObject, error)
@@ -480,6 +769,65 @@ func (sh *strictHandler) ListRooms(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListRoomsResponseObject); ok {
 		if err := validResponse.VisitListRoomsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// StopRoomAiring operation middleware
+func (sh *strictHandler) StopRoomAiring(w http.ResponseWriter, r *http.Request, id string) {
+	var request StopRoomAiringRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.StopRoomAiring(ctx, request.(StopRoomAiringRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "StopRoomAiring")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(StopRoomAiringResponseObject); ok {
+		if err := validResponse.VisitStopRoomAiringResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// StartRoomAiring operation middleware
+func (sh *strictHandler) StartRoomAiring(w http.ResponseWriter, r *http.Request, id string) {
+	var request StartRoomAiringRequestObject
+
+	request.Id = id
+
+	var body StartRoomAiringJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.StartRoomAiring(ctx, request.(StartRoomAiringRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "StartRoomAiring")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(StartRoomAiringResponseObject); ok {
+		if err := validResponse.VisitStartRoomAiringResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

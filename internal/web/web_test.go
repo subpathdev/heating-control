@@ -1,12 +1,14 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/subpathdev/heating-control/internal/api"
 	"github.com/subpathdev/heating-control/internal/controller"
@@ -15,13 +17,19 @@ import (
 type fakeRooms struct {
 	id     string
 	target float64
+	airing time.Duration
+	stops  int
 	err    error
 }
 
 func (f *fakeRooms) Rooms() []controller.RoomStatus {
+	until := time.Unix(1000, 0).UTC()
 	return []controller.RoomStatus{
-		{ID: "office", Label: "Office", Mode: controller.ModeOff},
-		{ID: "bedroom", Label: "Bedroom"},
+		{
+			ID: "office", Label: "Office", Mode: controller.ModeOff,
+			TargetState: controller.TargetHeld, AiringState: controller.AiringActive, AiringUntil: &until,
+		},
+		{ID: "bedroom", Label: "Bedroom", TargetState: controller.TargetApplied, AiringState: controller.AiringNone},
 	}
 }
 func (f *fakeRooms) Limits() (float64, float64) { return 10, 25 }
@@ -29,11 +37,25 @@ func (f *fakeRooms) SetTarget(id string, target float64) error {
 	f.id, f.target = id, target
 	return f.err
 }
+func (f *fakeRooms) StartAiring(id string, d time.Duration) error {
+	f.id, f.airing = id, d
+	return f.err
+}
+func (f *fakeRooms) StopAiring(id string) error {
+	f.id = id
+	f.stops++
+	return f.err
+}
+
+type fakeBroker struct{ err error }
+
+func (fakeBroker) Name() string                  { return "fake" }
+func (f fakeBroker) Check(context.Context) error { return f.err }
 
 const testHost = "192.168.178.60:30081"
 
 func handler(rooms Rooms) http.Handler {
-	return Handler(rooms, []string{"heating.example"})
+	return Handler(rooms, fakeBroker{}, []string{"heating.example"})
 }
 
 func get(t *testing.T, path string) *httptest.ResponseRecorder {
@@ -87,6 +109,12 @@ func TestListRooms(t *testing.T) {
 	if len(got.Rooms) != 2 || got.Rooms[0].Id != "office" || got.MaxTarget != 25 {
 		t.Fatalf("got %+v", got)
 	}
+	if !got.Connected {
+		t.Error("connected = false")
+	}
+	if got.Rooms[0].AiringState != api.Active || got.Rooms[0].AiringUntil == nil || got.Rooms[0].TargetState != api.Held {
+		t.Errorf("office = %+v", got.Rooms[0])
+	}
 	if got.Rooms[0].Mode != api.Off {
 		t.Errorf("mode = %q, want off", got.Rooms[0].Mode)
 	}
@@ -102,7 +130,7 @@ func TestListRooms(t *testing.T) {
 func TestSetTarget(t *testing.T) {
 	f := &fakeRooms{}
 	rec := post(t, handler(f), "/api/rooms/office/target", `{"target":20.5}`, nil)
-	if rec.Code != http.StatusNoContent {
+	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
 	}
 	if f.id != "office" || f.target != 20.5 {
@@ -121,7 +149,7 @@ func TestSetTargetErrors(t *testing.T) {
 		{"too large", `{"target":20,"x":"` + strings.Repeat("a", maxBodyBytes) + `"}`, nil, http.StatusBadRequest},
 		{"unknown room", `{"target":20}`, controller.ErrUnknownRoom, http.StatusNotFound},
 		{"out of range", `{"target":99}`, controller.ErrTargetOutOfRange, http.StatusBadRequest},
-		{"broker down", `{"target":20}`, errors.New("down"), http.StatusBadGateway},
+		{"unexpected", `{"target":20}`, errors.New("bug"), http.StatusInternalServerError},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -134,6 +162,75 @@ func TestSetTargetErrors(t *testing.T) {
 				t.Fatalf("body %q isn't an Error: %v", rec.Body.String(), err)
 			}
 		})
+	}
+}
+
+func TestListRoomsShowsABrokerOutage(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/rooms", nil)
+	req.Host = testHost
+	rec := httptest.NewRecorder()
+	Handler(&fakeRooms{}, fakeBroker{err: errors.New("down")}, nil).ServeHTTP(rec, req)
+	var got api.RoomList
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK || got.Connected {
+		t.Fatalf("status %d, connected %v", rec.Code, got.Connected)
+	}
+}
+
+func TestStartAiring(t *testing.T) {
+	f := &fakeRooms{}
+	rec := post(t, handler(f), "/api/rooms/office/airing", `{"minutes":30}`, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if f.id != "office" || f.airing != 30*time.Minute {
+		t.Fatalf("got %s %v", f.id, f.airing)
+	}
+}
+
+func TestStartAiringErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		err  error
+		want int
+	}{
+		{"not allowed", `{"minutes":45}`, nil, http.StatusBadRequest},
+		{"negative", `{"minutes":-15}`, nil, http.StatusBadRequest},
+		{"missing", `{}`, nil, http.StatusBadRequest},
+		{"bad json", `nope`, nil, http.StatusBadRequest},
+		{"unknown room", `{"minutes":15}`, controller.ErrUnknownRoom, http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeRooms{err: tt.err}
+			rec := post(t, handler(f), "/api/rooms/office/airing", tt.body, nil)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+			if tt.want == http.StatusBadRequest && f.airing != 0 {
+				t.Fatal("airing started")
+			}
+		})
+	}
+}
+
+func TestStopAiring(t *testing.T) {
+	do := func(h http.Handler) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodDelete, "/api/rooms/office/airing", nil)
+		req.Host = testHost
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	f := &fakeRooms{}
+	if rec := do(handler(f)); rec.Code != http.StatusAccepted || f.stops != 1 {
+		t.Fatalf("status %d, stops %d", rec.Code, f.stops)
+	}
+	if rec := do(handler(&fakeRooms{err: controller.ErrUnknownRoom})); rec.Code != http.StatusNotFound {
+		t.Fatalf("status %d, want 404", rec.Code)
 	}
 }
 
@@ -151,8 +248,8 @@ func TestOtherWebsitesAreRefused(t *testing.T) {
 		t.Fatal("the target was changed")
 	}
 	rec = post(t, handler(f), "/api/rooms/office/target", `{"target":20}`, map[string]string{"Origin": "http://" + testHost})
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("same origin: status = %d, want 204", rec.Code)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("same origin: status = %d, want 202", rec.Code)
 	}
 }
 
@@ -164,11 +261,11 @@ func TestDNSRebindingIsRefused(t *testing.T) {
 	}{
 		{"evil.example", http.StatusForbidden},
 		{"evil.example:30081", http.StatusForbidden},
-		{"heating.example:30081", http.StatusNoContent},
-		{"HEATING.example", http.StatusNoContent},
-		{"localhost:8080", http.StatusNoContent},
-		{"192.168.178.60:30081", http.StatusNoContent},
-		{"[fd2a::1]:30081", http.StatusNoContent},
+		{"heating.example:30081", http.StatusAccepted},
+		{"HEATING.example", http.StatusAccepted},
+		{"localhost:8080", http.StatusAccepted},
+		{"192.168.178.60:30081", http.StatusAccepted},
+		{"[fd2a::1]:30081", http.StatusAccepted},
 	}
 	for _, tt := range tests {
 		t.Run(tt.host, func(t *testing.T) {

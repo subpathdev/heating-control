@@ -49,13 +49,19 @@ func main() {
 	health.Register(mux, version, checker)
 	mux.Handle("GET /metrics", m.Handler())
 	// Probes and scrapes use the pod's IP and stay outside the page's checks.
-	mux.Handle("/", web.Handler(ctrl, cfg.AllowedHosts))
+	mux.Handle("/", web.Handler(ctrl, checker, cfg.AllowedHosts))
 
 	srv := &http.Server{
 		Addr:              ":8080",
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	controllerDone := make(chan struct{})
+	go func() {
+		defer close(controllerDone)
+		ctrl.Run(ctx)
+	}()
+
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
@@ -73,5 +79,5 @@ func main() {
 	}
 	// ListenAndServe returns as soon as Shutdown starts, so let requests finish.
 	<-shutdownDone
-	ctrl.Wait()
+	<-controllerDone
 }

@@ -11,9 +11,11 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/subpathdev/heating-control/internal/api"
 	"github.com/subpathdev/heating-control/internal/controller"
+	"github.com/subpathdev/heating-control/internal/health"
 )
 
 //go:embed static
@@ -26,12 +28,14 @@ type Rooms interface {
 	Rooms() []controller.RoomStatus
 	Limits() (min, max float64)
 	SetTarget(id string, target float64) error
+	StartAiring(id string, d time.Duration) error
+	StopAiring(id string) error
 }
 
 // Handler returns the page, the API and its OpenAPI document. The page has no
 // login, so it refuses requests from other websites, and allowedHosts protects
 // that check against DNS rebinding.
-func Handler(rooms Rooms, allowedHosts []string) http.Handler {
+func Handler(rooms Rooms, broker health.Checker, allowedHosts []string) http.Handler {
 	mux := http.NewServeMux()
 	content, err := fs.Sub(static, "static")
 	if err != nil {
@@ -46,7 +50,7 @@ func Handler(rooms Rooms, allowedHosts []string) http.Handler {
 		}
 	})
 
-	strict := api.NewStrictHandlerWithOptions(server{rooms: rooms}, nil, api.StrictHTTPServerOptions{
+	strict := api.NewStrictHandlerWithOptions(server{rooms: rooms, broker: broker}, nil, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: badRequest,
 		ResponseErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			log.Printf("api: %v", err)
@@ -90,26 +94,37 @@ func checkHost(allowedHosts []string, next http.Handler) http.Handler {
 
 // server implements api.StrictServerInterface.
 type server struct {
-	rooms Rooms
+	rooms  Rooms
+	broker health.Checker
 }
 
-func (s server) ListRooms(context.Context, api.ListRoomsRequestObject) (api.ListRoomsResponseObject, error) {
+func (s server) ListRooms(ctx context.Context, _ api.ListRoomsRequestObject) (api.ListRoomsResponseObject, error) {
 	statuses := s.rooms.Rooms()
 	rooms := make([]api.Room, 0, len(statuses))
 	for _, r := range statuses {
 		rooms = append(rooms, api.Room{
-			Id:          r.ID,
-			Label:       r.Label,
-			Temperature: r.Temperature,
-			Target:      r.Target,
-			Mode:        toAPIMode(r.Mode),
-			Heating:     r.Heating,
+			Id:            r.ID,
+			Label:         r.Label,
+			Temperature:   r.Temperature,
+			Target:        r.Target,
+			TargetState:   api.TargetState(r.TargetState),
+			Mode:          toAPIMode(r.Mode),
+			Heating:       r.Heating,
+			AiringState:   api.AiringState(r.AiringState),
+			AiringUntil:   r.AiringUntil,
+			LastSeen:      r.LastSeen,
+			CommandFailed: r.CommandFailed,
 		})
 	}
 	min, max := s.rooms.Limits()
 	noStore := "no-store"
 	return api.ListRooms200JSONResponse{
-		Body:    api.RoomList{Rooms: rooms, MinTarget: min, MaxTarget: max},
+		Body: api.RoomList{
+			Rooms:     rooms,
+			Connected: s.broker.Check(ctx) == nil,
+			MinTarget: min,
+			MaxTarget: max,
+		},
 		Headers: api.ListRooms200ResponseHeaders{CacheControl: &noStore},
 	}, nil
 }
@@ -117,14 +132,38 @@ func (s server) ListRooms(context.Context, api.ListRoomsRequestObject) (api.List
 func (s server) SetRoomTarget(_ context.Context, r api.SetRoomTargetRequestObject) (api.SetRoomTargetResponseObject, error) {
 	switch err := s.rooms.SetTarget(r.Id, r.Body.Target); {
 	case err == nil:
-		return api.SetRoomTarget204Response{}, nil
+		return api.SetRoomTarget202Response{}, nil
 	case errors.Is(err, controller.ErrUnknownRoom):
 		return api.SetRoomTarget404JSONResponse{Message: err.Error()}, nil
 	case errors.Is(err, controller.ErrTargetOutOfRange):
 		return api.SetRoomTarget400JSONResponse{Message: err.Error()}, nil
 	default:
-		log.Printf("set target: %v", err)
-		return api.SetRoomTarget502JSONResponse{Message: "could not reach the thermostat"}, nil
+		return nil, err
+	}
+}
+
+func (s server) StartRoomAiring(_ context.Context, r api.StartRoomAiringRequestObject) (api.StartRoomAiringResponseObject, error) {
+	if !r.Body.Minutes.Valid() {
+		return api.StartRoomAiring400JSONResponse{Message: "minutes must be 15, 30 or 60"}, nil
+	}
+	switch err := s.rooms.StartAiring(r.Id, time.Duration(r.Body.Minutes)*time.Minute); {
+	case err == nil:
+		return api.StartRoomAiring202Response{}, nil
+	case errors.Is(err, controller.ErrUnknownRoom):
+		return api.StartRoomAiring404JSONResponse{Message: err.Error()}, nil
+	default:
+		return nil, err
+	}
+}
+
+func (s server) StopRoomAiring(_ context.Context, r api.StopRoomAiringRequestObject) (api.StopRoomAiringResponseObject, error) {
+	switch err := s.rooms.StopAiring(r.Id); {
+	case err == nil:
+		return api.StopRoomAiring202Response{}, nil
+	case errors.Is(err, controller.ErrUnknownRoom):
+		return api.StopRoomAiring404JSONResponse{Message: err.Error()}, nil
+	default:
+		return nil, err
 	}
 }
 

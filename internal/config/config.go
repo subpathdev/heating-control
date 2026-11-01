@@ -18,7 +18,10 @@ type Room struct {
 
 // Config is the program's configuration file.
 type Config struct {
-	Broker    string  `yaml:"broker"`
+	Broker string `yaml:"broker"`
+	// ClientID must be unique on the broker: a second client with the same ID
+	// disconnects the first.
+	ClientID  string  `yaml:"clientId"`
 	BaseTopic string  `yaml:"baseTopic"`
 	MinTarget float64 `yaml:"minTarget"`
 	MaxTarget float64 `yaml:"maxTarget"`
@@ -38,7 +41,12 @@ func Load(path string) (*Config, error) {
 }
 
 func parse(data []byte) (*Config, error) {
-	cfg := Config{BaseTopic: "zigbee2mqtt", MinTarget: 10, MaxTarget: 25}
+	cfg := Config{
+		ClientID:  "heating-control",
+		BaseTopic: "zigbee2mqtt",
+		MinTarget: 10,
+		MaxTarget: 25,
+	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
@@ -52,6 +60,7 @@ func parse(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("at least one room is required")
 	}
 	seen := map[string]bool{}
+	seenTRV := map[string]bool{}
 	for _, r := range cfg.Rooms {
 		if r.ID == "" || r.Label == "" || r.TRV == "" {
 			return nil, fmt.Errorf("room %q needs id, label and trv", r.ID)
@@ -60,6 +69,10 @@ func parse(data []byte) (*Config, error) {
 			return nil, fmt.Errorf("duplicate room id %q", r.ID)
 		}
 		seen[r.ID] = true
+		if seenTRV[r.TRV] {
+			return nil, fmt.Errorf("thermostat %q is in more than one room", r.TRV)
+		}
+		seenTRV[r.TRV] = true
 	}
 	return &cfg, nil
 }

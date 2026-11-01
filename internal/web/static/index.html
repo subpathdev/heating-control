@@ -47,6 +47,12 @@
   button:disabled { opacity: .4; cursor: default; }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   #error { color: var(--error); min-height: 1.4em; margin: 0; }
+  .note { color: var(--muted); font-size: .9rem; margin-top: 8px; }
+  .note:empty { display: none; }
+  .note.problem { color: var(--error); }
+  .airing { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
+  .airing button.stop { grid-column: 1 / -1; background: var(--accent); color: var(--card); font-weight: 600; }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
@@ -72,14 +78,32 @@
     errorEl.textContent = commandError || connectionError;
   }
 
+  const airingMinutes = [15, 30, 60];
+
+  const clock = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const degrees = v => v == null ? '–' : v.toFixed(1) + ' °C';
   const signed = s => (s > 0 ? '+' : '−') + Math.abs(s);
   const inRange = v => v >= data.minTarget && v <= data.maxTarget;
 
   function describe(room) {
+    switch (room.airingState) {
+      case 'starting': return 'Airing: turning the heating off';
+      case 'active': return 'Airing until ' + clock(room.airingUntil) + ', not heating';
+      case 'restoring': return 'Airing is over: turning the heating back on';
+    }
     if (room.mode === 'unknown') return 'Waiting for the thermostat';
     if (room.mode === 'off') return 'Not heating: the thermostat is off';
     return room.heating ? 'Heating' : 'Not heating right now';
+  }
+
+  function note(room) {
+    if (room.commandFailed) return { text: 'The thermostat isn\'t confirming. Still trying.', problem: true };
+    if (room.targetState === 'failed') return { text: 'The thermostat didn\'t take the last change.', problem: true };
+    if (room.targetState === 'held') return { text: 'Target applies when heating is back.', problem: false };
+    if (room.targetState === 'sending') return { text: 'Sending the target…', problem: false };
+    const lastSeen = room.lastSeen ? Date.now() - new Date(room.lastSeen) : 0;
+    if (lastSeen > 2 * 3600 * 1000) return { text: 'Last report at ' + clock(room.lastSeen) + '.', problem: true };
+    return { text: '', problem: false };
   }
 
   function makeButton(id, label, step) {
@@ -112,9 +136,27 @@
     const buttons = steps.map(step => makeButton(room.id, room.label, step));
     target.append(buttons[0].el, buttons[1].el, value, buttons[2].el, buttons[3].el);
 
-    el.append(head, state, target);
+    const airing = document.createElement('div');
+    airing.className = 'airing';
+    const start = airingMinutes.map(minutes => {
+      const b = document.createElement('button');
+      b.textContent = 'Airing ' + minutes;
+      b.setAttribute('aria-label', 'Air ' + room.label + ' for ' + minutes + ' minutes');
+      b.addEventListener('click', () => startAiring(room.id, minutes));
+      airing.append(b);
+      return b;
+    });
+    const stop = document.createElement('button');
+    stop.className = 'stop';
+    stop.textContent = 'Heat again';
+    stop.addEventListener('click', () => stopAiring(room.id));
+    airing.append(stop);
+
+    const problem = document.createElement('div');
+
+    el.append(head, state, target, airing, problem);
     roomsEl.append(el);
-    return { now, state, value, buttons };
+    return { now, state, value, buttons, start, stop, problem };
   }
 
   // Updates the existing elements: replacing a button during a tap loses the tap.
@@ -130,6 +172,13 @@
       for (const b of card.buttons) {
         b.el.disabled = room.target == null || !inRange(room.target + b.step);
       }
+      const airing = room.airingState === 'starting' || room.airingState === 'active';
+      const offAlone = room.airingState === 'none' && room.mode === 'off';
+      for (const b of card.start) b.hidden = airing;
+      card.stop.hidden = !airing && !offAlone;
+      const n = note(room);
+      card.problem.className = 'note' + (n.problem ? ' problem' : '');
+      card.problem.textContent = n.text;
     }
   }
 
@@ -142,7 +191,7 @@
       if (sending > 0 || generation !== refreshGeneration) return;
       data = next;
       render();
-      connectionError = '';
+      connectionError = data.connected ? '' : 'No connection to the broker: values may be old and commands wait.';
     } catch {
       if (generation !== refreshGeneration) return;
       connectionError = 'Can\'t reach the server. Are you on the home Wi-Fi?';
@@ -157,8 +206,27 @@
     render();
 
     const target = room.target;
+    enqueue('api/rooms/' + encodeURIComponent(id) + '/target', 'POST', { target });
+  }
+
+  function startAiring(id, minutes) {
+    const room = data.rooms.find(r => r.id === id);
+    room.airingState = 'starting';
+    room.airingUntil = new Date(Date.now() + minutes * 60000).toISOString();
+    render();
+    enqueue('api/rooms/' + encodeURIComponent(id) + '/airing', 'POST', { minutes });
+  }
+
+  function stopAiring(id) {
+    const room = data.rooms.find(r => r.id === id);
+    room.airingState = 'restoring';
+    render();
+    enqueue('api/rooms/' + encodeURIComponent(id) + '/airing', 'DELETE');
+  }
+
+  function enqueue(url, method, body) {
     sending++;
-    sendQueue = sendQueue.then(() => send(id, target)).finally(() => {
+    sendQueue = sendQueue.then(() => send(url, method, body)).finally(() => {
       sending--;
       if (sending === 0) refresh();
     });
@@ -172,13 +240,14 @@
     }
   }
 
-  async function send(id, target) {
+  async function send(url, method, body) {
     try {
-      const res = await fetch('api/rooms/' + encodeURIComponent(id) + '/target', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target }),
-      });
+      const options = { method };
+      if (body) {
+        options.headers = { 'Content-Type': 'application/json' };
+        options.body = JSON.stringify(body);
+      }
+      const res = await fetch(url, options);
       if (!res.ok) throw new Error(await errorMessage(res));
       commandError = '';
     } catch (e) {
