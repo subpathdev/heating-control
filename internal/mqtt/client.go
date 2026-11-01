@@ -2,7 +2,6 @@
 package mqtt
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/subpathdev/heating-control/internal/config"
 	"github.com/subpathdev/heating-control/internal/controller"
+	"github.com/subpathdev/heating-control/internal/health"
 )
 
 const publishTimeout = 5 * time.Second
@@ -23,7 +23,7 @@ type Sink interface {
 	HandleRoomTemperature(sensor string, t float64)
 }
 
-// Client implements controller.Thermostat and health.Checker.
+// Client implements controller.Thermostat.
 type Client struct {
 	cfg    *config.Config
 	base   string
@@ -57,15 +57,10 @@ func (c *Client) Close() {
 	c.client.Disconnect(250)
 }
 
-// Name implements health.Checker.
-func (c *Client) Name() string { return "mqtt" }
-
-// Check implements health.Checker.
-func (c *Client) Check(context.Context) error {
-	if !c.client.IsConnectionOpen() {
-		return errors.New("not connected")
-	}
-	return nil
+// Checker returns the health check for the broker connection. Call it after
+// Start.
+func (c *Client) Checker() health.Checker {
+	return connectionChecker{conn: c.client}
 }
 
 // SetTarget implements controller.Thermostat.
@@ -78,18 +73,14 @@ func (c *Client) publish(device, verb string, payload any) error {
 	if err != nil {
 		return err
 	}
-	token := c.client.Publish(fmt.Sprintf("%s/%s/%s", c.base, device, verb), 1, false, data)
-	if !token.WaitTimeout(publishTimeout) {
-		return errors.New("publish timed out")
-	}
-	return token.Error()
+	return waitForToken(c.client.Publish(fmt.Sprintf("%s/%s/%s", c.base, device, verb), 1, false, data), publishTimeout)
 }
 
 func (c *Client) onConnect(sink Sink, client paho.Client) {
 	log.Printf("mqtt connected")
 	for _, r := range c.cfg.Rooms {
 		trv := r.TRV
-		client.Subscribe(c.base+"/"+trv, 0, func(_ paho.Client, m paho.Message) {
+		logSubscribeFailure(trv, client.Subscribe(c.base+"/"+trv, 0, func(_ paho.Client, m paho.Message) {
 			s, err := parseThermostat(m.Payload())
 			if err != nil {
 				log.Printf("%s: %v", trv, err)
@@ -98,10 +89,10 @@ func (c *Client) onConnect(sink Sink, client paho.Client) {
 			if err := sink.HandleThermostatState(trv, s); err != nil {
 				log.Printf("%s: %v", trv, err)
 			}
-		})
+		}))
 		if r.Sensor != "" {
 			sensor := r.Sensor
-			client.Subscribe(c.base+"/"+sensor, 0, func(_ paho.Client, m paho.Message) {
+			logSubscribeFailure(sensor, client.Subscribe(c.base+"/"+sensor, 0, func(_ paho.Client, m paho.Message) {
 				t, err := parseTemperature(m.Payload())
 				if err != nil {
 					log.Printf("%s: %v", sensor, err)
@@ -110,7 +101,7 @@ func (c *Client) onConnect(sink Sink, client paho.Client) {
 				if t != nil {
 					sink.HandleRoomTemperature(sensor, *t)
 				}
-			})
+			}))
 		}
 		// Publishing from this handler must not wait for the token, or it blocks
 		// the client's own message loop.
@@ -125,6 +116,28 @@ func (c *Client) onConnect(sink Sink, client paho.Client) {
 			}
 		}()
 	}
+}
+
+// logSubscribeFailure reports a failed subscription, which would otherwise
+// leave a room silently out of date. It doesn't wait in the connect handler.
+func logSubscribeFailure(device string, token waitToken) {
+	go func() {
+		if err := waitForToken(token, publishTimeout); err != nil {
+			log.Printf("%s: subscribing: %v", device, err)
+		}
+	}()
+}
+
+type waitToken interface {
+	WaitTimeout(time.Duration) bool
+	Error() error
+}
+
+func waitForToken(token waitToken, timeout time.Duration) error {
+	if !token.WaitTimeout(timeout) {
+		return errors.New("timed out")
+	}
+	return token.Error()
 }
 
 func parseThermostat(payload []byte) (controller.ThermostatState, error) {

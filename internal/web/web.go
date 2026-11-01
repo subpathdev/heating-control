@@ -36,11 +36,13 @@ func Register(mux *http.ServeMux, rooms Rooms) {
 		min, max := rooms.Limits()
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		json.NewEncoder(w).Encode(map[string]any{
+		if err := json.NewEncoder(w).Encode(map[string]any{
 			"rooms":     rooms.Rooms(),
 			"minTarget": min,
 			"maxTarget": max,
-		})
+		}); err != nil {
+			log.Printf("write rooms: %v", err)
+		}
 	})
 
 	mux.HandleFunc("POST /api/rooms/{id}/target", func(w http.ResponseWriter, r *http.Request) {

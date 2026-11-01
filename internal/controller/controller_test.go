@@ -37,6 +37,13 @@ func state(mode string, setpoint float64) ThermostatState {
 	return ThermostatState{Mode: &mode, Setpoint: &setpoint}
 }
 
+func report(t *testing.T, c *Controller, s ThermostatState) {
+	t.Helper()
+	if err := c.HandleThermostatState("trv-office", s); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func target(t *testing.T, c *Controller) float64 {
 	t.Helper()
 	got := c.Rooms()[0].Target
@@ -48,7 +55,7 @@ func target(t *testing.T, c *Controller) float64 {
 
 func TestSetTargetWhileHeating(t *testing.T) {
 	c, f := newController(t)
-	c.HandleThermostatState("trv-office", state("heat", 20))
+	report(t, c, state("heat", 20))
 
 	if err := c.SetTarget("office", 20.5); err != nil {
 		t.Fatal(err)
@@ -63,7 +70,7 @@ func TestSetTargetWhileHeating(t *testing.T) {
 
 func TestSetTargetRoundsToHalfDegree(t *testing.T) {
 	c, f := newController(t)
-	c.HandleThermostatState("trv-office", state("heat", 20))
+	report(t, c, state("heat", 20))
 
 	if err := c.SetTarget("office", 20.3); err != nil {
 		t.Fatal(err)
@@ -75,7 +82,7 @@ func TestSetTargetRoundsToHalfDegree(t *testing.T) {
 
 func TestSetTargetRejects(t *testing.T) {
 	c, f := newController(t)
-	c.HandleThermostatState("trv-office", state("heat", 20))
+	report(t, c, state("heat", 20))
 
 	for _, bad := range []float64{9.5, 25.5, math.NaN(), math.Inf(1)} {
 		if err := c.SetTarget("office", bad); !errors.Is(err, ErrTargetOutOfRange) {
@@ -92,7 +99,7 @@ func TestSetTargetRejects(t *testing.T) {
 
 func TestSetTargetFailureKeepsOldTarget(t *testing.T) {
 	c, f := newController(t)
-	c.HandleThermostatState("trv-office", state("heat", 20))
+	report(t, c, state("heat", 20))
 	f.err = errors.New("broker down")
 
 	if err := c.SetTarget("office", 21); err == nil {
@@ -107,8 +114,8 @@ func TestSetTargetFailureKeepsOldTarget(t *testing.T) {
 // heat with the window open.
 func TestSetTargetWhileOffIsHeld(t *testing.T) {
 	c, f := newController(t)
-	c.HandleThermostatState("trv-office", state("heat", 20))
-	c.HandleThermostatState("trv-office", state("off", 7))
+	report(t, c, state("heat", 20))
+	report(t, c, state("off", 7))
 
 	if err := c.SetTarget("office", 22); err != nil {
 		t.Fatal(err)
@@ -120,7 +127,7 @@ func TestSetTargetWhileOffIsHeld(t *testing.T) {
 		t.Fatalf("page shows %v, want the held 22", got)
 	}
 
-	c.HandleThermostatState("trv-office", state("heat", 20))
+	report(t, c, state("heat", 20))
 	if len(f.targets) != 1 || f.targets[0] != 22 {
 		t.Fatalf("sent %v, want [22] once heating again", f.targets)
 	}
@@ -136,9 +143,7 @@ func TestFrostSetpointIsNeverATarget(t *testing.T) {
 		state("heat", 7),
 		state("heat", 20),
 	} {
-		if err := c.HandleThermostatState("trv-office", s); err != nil {
-			t.Fatal(err)
-		}
+		report(t, c, s)
 		if got := target(t, c); got != 20 {
 			t.Fatalf("after %s/%v target = %v, want 20", *s.Mode, *s.Setpoint, got)
 		}
@@ -147,14 +152,14 @@ func TestFrostSetpointIsNeverATarget(t *testing.T) {
 
 func TestReportedFrostTemperatureIsUsed(t *testing.T) {
 	c, _ := newController(t)
-	c.HandleThermostatState("trv-office", state("heat", 20))
-	c.HandleThermostatState("trv-office", ThermostatState{FrostProtection: ptr(5.0)})
+	report(t, c, state("heat", 20))
+	report(t, c, ThermostatState{FrostProtection: ptr(5.0)})
 
-	c.HandleThermostatState("trv-office", state("heat", 5))
+	report(t, c, state("heat", 5))
 	if got := target(t, c); got != 20 {
 		t.Fatalf("target = %v, want 20", got)
 	}
-	c.HandleThermostatState("trv-office", state("heat", 7))
+	report(t, c, state("heat", 7))
 	if got := target(t, c); got != 7 {
 		t.Fatalf("target = %v, want 7", got)
 	}
@@ -162,8 +167,8 @@ func TestReportedFrostTemperatureIsUsed(t *testing.T) {
 
 func TestKnobChangeUpdatesTarget(t *testing.T) {
 	c, _ := newController(t)
-	c.HandleThermostatState("trv-office", state("heat", 20))
-	c.HandleThermostatState("trv-office", state("heat", 18))
+	report(t, c, state("heat", 20))
+	report(t, c, state("heat", 18))
 	if got := target(t, c); got != 18 {
 		t.Fatalf("target = %v, want 18", got)
 	}
@@ -171,7 +176,7 @@ func TestKnobChangeUpdatesTarget(t *testing.T) {
 
 func TestSensorTemperatureWinsOverLocal(t *testing.T) {
 	c, _ := newController(t)
-	c.HandleThermostatState("trv-office", ThermostatState{LocalTemperature: ptr(22.0)})
+	report(t, c, ThermostatState{LocalTemperature: ptr(22.0)})
 	if got := c.Rooms()[0].Temperature; got == nil || *got != 22 {
 		t.Fatalf("temperature = %v, want the local 22", got)
 	}

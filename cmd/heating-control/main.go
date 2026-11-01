@@ -40,7 +40,7 @@ func main() {
 	defer client.Close()
 
 	mux := http.NewServeMux()
-	health.Register(mux, version, client)
+	health.Register(mux, version, client.Checker())
 	web.Register(mux, ctrl)
 
 	srv := &http.Server{
@@ -53,7 +53,9 @@ func main() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		srv.Shutdown(shutdown)
+		if err := srv.Shutdown(shutdown); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
 	}()
 
 	log.Printf("heating-control %s listening on %s", version, srv.Addr)
