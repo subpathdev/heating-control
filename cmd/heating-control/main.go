@@ -15,6 +15,7 @@ import (
 	"github.com/subpathdev/heating-control/internal/config"
 	"github.com/subpathdev/heating-control/internal/controller"
 	"github.com/subpathdev/heating-control/internal/health"
+	"github.com/subpathdev/heating-control/internal/metrics"
 	"github.com/subpathdev/heating-control/internal/mqtt"
 	"github.com/subpathdev/heating-control/internal/web"
 )
@@ -35,12 +36,18 @@ func main() {
 	defer stop()
 
 	client := mqtt.New(cfg)
-	ctrl := controller.New(cfg, client)
+	m := metrics.New(version)
+	ctrl := controller.New(cfg, m.Thermostat(client))
 	client.Start(ctrl)
 	defer client.Close()
 
+	checker := client.Checker()
+	m.AddChecker(checker)
+	m.AddRooms(ctrl)
+
 	mux := http.NewServeMux()
-	health.Register(mux, version, client.Checker())
+	health.Register(mux, version, checker)
+	mux.Handle("GET /metrics", m.Handler())
 	web.Register(mux, ctrl)
 
 	srv := &http.Server{
