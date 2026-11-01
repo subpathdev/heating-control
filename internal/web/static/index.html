@@ -13,11 +13,13 @@
     color-scheme: light dark;
     --bg: #f6f5f2; --card: #ffffff; --text: #1d1f21; --muted: #666a70;
     --line: #dddcd7; --button: #eceae5; --accent: #b4490f; --error: #a4161a;
+    --good: #1a7f37; --bad: #c62828;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #191a1c; --card: #24262a; --text: #eeeeec; --muted: #a2a6ac;
       --line: #383a3f; --button: #33363b; --accent: #f08a4b; --error: #ff8a8a;
+      --good: #3fb950; --bad: #ff6b6b;
     }
   }
   * { box-sizing: border-box; }
@@ -27,7 +29,11 @@
     background: var(--bg); color: var(--text);
     font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  h1 { font-size: 1.25rem; margin: 4px 0 16px; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 4px 0 16px; }
+  h1 { font-size: 1.25rem; margin: 0; }
+  #status { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: .85rem; text-align: right; }
+  #status::before { content: ""; flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--bad); }
+  #status.good::before { background: var(--good); }
   .room {
     background: var(--card); border: 1px solid var(--line); border-radius: 12px;
     padding: 14px; margin-bottom: 12px;
@@ -56,12 +62,16 @@
 </style>
 </head>
 <body>
-<h1>Heating</h1>
+<header>
+  <h1>Heating</h1>
+  <div id="status" role="status">Connecting…</div>
+</header>
 <div id="rooms"></div>
 <p id="error" role="status"></p>
 <script>
   const roomsEl = document.getElementById('rooms');
   const errorEl = document.getElementById('error');
+  const statusEl = document.getElementById('status');
   const steps = [-1, -0.5, 0.5, 1];
   const cards = new Map();
   let data = null;
@@ -79,11 +89,15 @@
   }
 
   const airingMinutes = [5, 15, 30, 60];
+  // Thermostats report at least about every 25 minutes.
+  const staleAfterMs = 2 * 3600 * 1000;
 
   const clock = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const degrees = v => v == null ? '–' : v.toFixed(1) + ' °C';
   const signed = s => (s > 0 ? '+' : '−') + Math.abs(s);
   const inRange = v => v >= data.minTarget && v <= data.maxTarget;
+
+  const isStale = room => room.lastSeen && Date.now() - new Date(room.lastSeen) > staleAfterMs;
 
   function describe(room) {
     switch (room.airingState) {
@@ -101,8 +115,7 @@
     if (room.targetState === 'failed') return { text: 'The thermostat didn\'t take the last change.', problem: true };
     if (room.targetState === 'held') return { text: 'Target applies when heating is back.', problem: false };
     if (room.targetState === 'sending') return { text: 'Sending the target…', problem: false };
-    const lastSeen = room.lastSeen ? Date.now() - new Date(room.lastSeen) : 0;
-    if (lastSeen > 2 * 3600 * 1000) return { text: 'Last report at ' + clock(room.lastSeen) + '.', problem: true };
+    if (isStale(room)) return { text: 'Last report at ' + clock(room.lastSeen) + '.', problem: true };
     return { text: '', problem: false };
   }
 
@@ -159,6 +172,22 @@
     return { now, state, value, buttons, start, stop, problem };
   }
 
+  // The page loading proves nothing about the devices, so green means the server,
+  // the broker and every thermostat are all fine.
+  function roomProblem() {
+    for (const room of data.rooms) {
+      if (room.commandFailed) return room.label + ': not confirming';
+      if (!room.lastSeen) return room.label + ': no report yet';
+      if (isStale(room)) return room.label + ': no report since ' + clock(room.lastSeen);
+    }
+    return '';
+  }
+
+  function showStatus(problem) {
+    statusEl.className = problem ? '' : 'good';
+    statusEl.textContent = problem || 'All OK';
+  }
+
   // Updates the existing elements: replacing a button during a tap loses the tap.
   function render() {
     for (const room of data.rooms) {
@@ -192,9 +221,11 @@
       data = next;
       render();
       connectionError = data.connected ? '' : 'No connection to the broker: values may be old and commands wait.';
+      showStatus(data.connected ? roomProblem() : 'No broker');
     } catch {
       if (generation !== refreshGeneration) return;
       connectionError = 'Can\'t reach the server. Are you on the home Wi-Fi?';
+      showStatus('No server');
     }
     showError();
   }
