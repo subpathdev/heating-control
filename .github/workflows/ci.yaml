@@ -1,6 +1,7 @@
 # Tests and lints every PR and push to main. A push to main also releases: svu
 # works out the next version from the conventional commits since the last tag,
-# and if there is one, the image is published and the tag and release created.
+# and if there is one, the image and Helm chart are published and the tag and
+# release created.
 # feat: is a minor bump, fix: a patch, and docs:, ci:, chore: and the like don't
 # release. While the version is 0.x, a breaking change is a minor bump too.
 name: ci
@@ -39,10 +40,20 @@ jobs:
         with:
           version: v2.15.0
 
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v5
+        with:
+          version: v4.3.1
+      - run: helm lint charts/heating-control -f charts/heating-control/ci-values.yaml
+      - run: helm template test charts/heating-control -f charts/heating-control/ci-values.yaml
+
   # Builds without pushing, so a broken Dockerfile shows up in the PR.
   image:
     if: github.event_name == 'pull_request'
-    needs: [test, lint]
+    needs: [test, lint, chart]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,7 +64,7 @@ jobs:
 
   release:
     if: github.event_name == 'push'
-    needs: [test, lint]
+    needs: [test, lint, chart]
     runs-on: ubuntu-latest
     # Two quick merges must not work out the same version.
     concurrency: release
@@ -94,6 +105,19 @@ jobs:
           tags: ghcr.io/subpathdev/heating-control:${{ steps.next.outputs.version }}
           build-args: VERSION=${{ steps.next.outputs.version }}
           labels: org.opencontainers.image.source=https://github.com/subpathdev/heating-control
+      - uses: azure/setup-helm@v5
+        if: steps.next.outputs.tag != ''
+        with:
+          version: v4.3.1
+      - name: Publish the chart
+        if: steps.next.outputs.tag != ''
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm package charts/heating-control --version "$VERSION" --app-version "$VERSION"
+          helm push "heating-control-$VERSION.tgz" oci://ghcr.io/subpathdev/charts
       - name: Create the release
         if: steps.next.outputs.tag != ''
         env:

@@ -1,0 +1,40 @@
+image:
+  repository: ghcr.io/subpathdev/heating-control
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Written to the program's config file. See internal/config/config.go.
+config:
+  # MQTT broker, for example tcp://mosquitto.mqtt.svc.cluster.local:1883.
+  broker: ""
+  baseTopic: zigbee2mqtt
+  minTarget: 10
+  maxTarget: 25
+  # - id: office
+  #   label: Office
+  #   trv: trv-office
+  #   sensor: temperature-sensor-office
+  rooms: []
+  # Host names the page is reached by. IP addresses and localhost always work.
+  allowedHosts: []
+
+service:
+  type: ClusterIP
+  port: 8080
+  # Only used with type NodePort. Empty lets Kubernetes pick one.
+  nodePort: null
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  # Labels Prometheus selects ServiceMonitors by.
+  labels: {}
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

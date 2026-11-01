@@ -1,0 +1,9 @@
+apiVersion: v2
+name: heating-control
+description: Small web page to adjust the heating per room from a phone on the home network.
+type: application
+# Both are set from the release version when the chart is packaged.
+version: 0.0.0
+appVersion: 0.0.0
+sources:
+  - https://github.com/subpathdev/heating-control
