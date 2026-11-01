@@ -144,7 +144,7 @@ func (s server) SetRoomTarget(_ context.Context, r api.SetRoomTargetRequestObjec
 
 func (s server) StartRoomAiring(_ context.Context, r api.StartRoomAiringRequestObject) (api.StartRoomAiringResponseObject, error) {
 	if !r.Body.Minutes.Valid() {
-		return api.StartRoomAiring400JSONResponse{Message: "minutes must be 15, 30 or 60"}, nil
+		return api.StartRoomAiring400JSONResponse{Message: "minutes must be 5, 15, 30 or 60"}, nil
 	}
 	switch err := s.rooms.StartAiring(r.Id, time.Duration(r.Body.Minutes)*time.Minute); {
 	case err == nil:

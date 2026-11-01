@@ -190,6 +190,14 @@ func TestStartAiring(t *testing.T) {
 	}
 }
 
+func TestStartAiringForFiveMinutes(t *testing.T) {
+	f := &fakeRooms{}
+	rec := post(t, handler(f), "/api/rooms/office/airing", `{"minutes":5}`, nil)
+	if rec.Code != http.StatusAccepted || f.airing != 5*time.Minute {
+		t.Fatalf("status %d, airing %v", rec.Code, f.airing)
+	}
+}
+
 func TestStartAiringErrors(t *testing.T) {
 	tests := []struct {
 		name string
