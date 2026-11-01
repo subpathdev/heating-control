@@ -552,8 +552,8 @@ func TestAiringRestoresTheModeFromBefore(t *testing.T) {
 	}
 }
 
-// The thermostat is already in its own pause, so off isn't the mode to restore.
-func TestAiringDuringAThermostatPauseRestoresHeat(t *testing.T) {
+// The thermostat was already off, so off isn't the mode to restore.
+func TestAiringWhileAlreadyOffRestoresHeat(t *testing.T) {
 	h := newHarness(t)
 	h.report("heat", 20)
 	h.report("off", 7)
@@ -564,7 +564,7 @@ func TestAiringDuringAThermostatPauseRestoresHeat(t *testing.T) {
 		t.Fatalf("state = %s, want active", got)
 	}
 
-	// Its pause ends, and off goes out again.
+	// It leaves off, and off goes out again.
 	h.report("heat", 7)
 	h.wantKinds("off")
 	h.report("off", 7)
@@ -682,7 +682,7 @@ func TestLostRestoreKeepsGoing(t *testing.T) {
 	}
 }
 
-// The thermostat can go off by itself, so only a tap turns it back on.
+// Someone may have turned it off on purpose, so only a tap turns it back on.
 func TestRoomThatIsOffIsLeftAlone(t *testing.T) {
 	h := newHarness(t)
 	h.report("off", 7)
