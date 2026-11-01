@@ -11,9 +11,9 @@ A small web page to adjust the heating per room from a phone on the home network
 The service keeps no saved state, so a restart during airing forgets it: **that room stays off until someone taps "Heat again"**. A target waiting to be sent is lost too. The thermostat's own frost protection still applies.
 
 - A target changed during airing is applied when it ends.
-- A thermostat leaving off during airing gets off once more. If it leaves off again, someone is at the radiator, so airing ends.
+- A thermostat leaving off during airing gets off once more. If it leaves off again, someone is at the radiator, so airing ends. So turning it on by hand during airing takes two tries.
 - Commands repeat until the thermostat confirms them, every 30 s for about 5 minutes. A target then gives up and shows the thermostat's value. Off and heat-again keep trying every 5 minutes and show a problem on the page, because giving up would mean heating with the window open or a cold room.
-- A thermostat that is off with no airing is left alone, because it can turn itself off and come back. The page offers "Heat again" for it.
+- A thermostat that is off with no airing is left alone, because someone may have turned it off on purpose. The page offers "Heat again" for it.
 
 ## Requirements
 

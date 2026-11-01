@@ -17,8 +17,9 @@ const (
 	// giving up would leave it heating with the window open, or cold.
 	slowRetryInterval = 5 * time.Minute
 	// maxFlips is how often a thermostat may leave off during airing. The first
-	// time could be its own pause ending, so off is sent again. The second time
-	// someone at the radiator wants heat, so airing ends.
+	// time off is sent again, because a single report could have another cause,
+	// such as the TRV's open window detection ending if that's turned on. The
+	// second time someone at the radiator wants heat, so airing ends.
 	maxFlips = 2
 	// settleTime is how long a thermostat back from off gets to restore its own
 	// setpoint. After that a setpoint at the frost value is simply what it's set to.

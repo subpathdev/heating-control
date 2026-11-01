@@ -8,7 +8,7 @@
 // All state is in memory. After a restart a room that was airing stays off until
 // someone taps "Heat again" on the page.
 //
-// Four behaviours of the Sonoff TRVZB shape this code. They were measured on a
+// Three behaviours of the Sonoff TRVZB shape this code. They were measured on a
 // real device (firmware 1.3.0):
 //   - In system_mode off it reports its frost protection temperature as the
 //     setpoint, and briefly keeps reporting it after going back to heat. That
@@ -16,9 +16,10 @@
 //   - Writing a setpoint while it is off switches it back to heat, so a target
 //     changed during that time is held until it can be sent.
 //   - After a write it can still send a few reports with the old setpoint.
-//   - It can go off on its own and return by itself, so "off" doesn't mean this
-//     program turned it off. A room is only turned back on if this program turned
-//     it off, or someone asks for it.
+//
+// Someone can also turn a thermostat off by hand, so "off" doesn't mean this
+// program turned it off. A room is only turned back on if this program turned it
+// off, or someone asks for it.
 package controller
 
 import (
