@@ -299,6 +299,34 @@ func (response ListRooms200JSONResponse) VisitListRoomsResponse(w http.ResponseW
 	return err
 }
 
+type ListRooms403JSONResponse Error
+
+func (response ListRooms403JSONResponse) VisitListRoomsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListRooms500JSONResponse Error
+
+func (response ListRooms500JSONResponse) VisitListRoomsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type SetRoomTargetRequestObject struct {
 	Id   string `json:"id"`
 	Body *SetRoomTargetJSONRequestBody
@@ -330,6 +358,20 @@ func (response SetRoomTarget400JSONResponse) VisitSetRoomTargetResponse(w http.R
 	return err
 }
 
+type SetRoomTarget403JSONResponse Error
+
+func (response SetRoomTarget403JSONResponse) VisitSetRoomTargetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type SetRoomTarget404JSONResponse Error
 
 func (response SetRoomTarget404JSONResponse) VisitSetRoomTargetResponse(w http.ResponseWriter) error {
@@ -340,6 +382,20 @@ func (response SetRoomTarget404JSONResponse) VisitSetRoomTargetResponse(w http.R
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetRoomTarget500JSONResponse Error
+
+func (response SetRoomTarget500JSONResponse) VisitSetRoomTargetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
 	_, err := buf.WriteTo(w)
 	return err
 }

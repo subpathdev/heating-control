@@ -8,7 +8,9 @@ import (
 	"errors"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/subpathdev/heating-control/internal/api"
 	"github.com/subpathdev/heating-control/internal/controller"
@@ -26,8 +28,11 @@ type Rooms interface {
 	SetTarget(id string, target float64) error
 }
 
-// Register adds the page, the API and its OpenAPI document to mux.
-func Register(mux *http.ServeMux, rooms Rooms) {
+// Handler returns the page, the API and its OpenAPI document. The page has no
+// login, so it refuses requests from other websites, and allowedHosts protects
+// that check against DNS rebinding.
+func Handler(rooms Rooms, allowedHosts []string) http.Handler {
+	mux := http.NewServeMux()
 	content, err := fs.Sub(static, "static")
 	if err != nil {
 		panic(err)
@@ -52,6 +57,34 @@ func Register(mux *http.ServeMux, rooms Rooms) {
 		BaseRouter:       mux,
 		ErrorHandlerFunc: badRequest,
 		Middlewares:      []api.MiddlewareFunc{limitBody},
+	})
+
+	crossOrigin := http.NewCrossOriginProtection()
+	crossOrigin.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusForbidden, "request from another website")
+	}))
+	return checkHost(allowedHosts, crossOrigin.Handler(mux))
+}
+
+// checkHost refuses unknown host names. With DNS rebinding another website's
+// name points at this server, so its requests look same-origin. Such a request
+// always carries that name, never an IP address.
+func checkHost(allowedHosts []string, next http.Handler) http.Handler {
+	allowed := map[string]bool{"localhost": true}
+	for _, h := range allowedHosts {
+		allowed[strings.ToLower(h)] = true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+		if net.ParseIP(host) == nil && !allowed[strings.ToLower(host)] {
+			writeError(w, http.StatusForbidden, "unknown host name, add it to allowedHosts")
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

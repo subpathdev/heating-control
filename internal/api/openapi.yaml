@@ -23,14 +23,26 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RoomList"
+        "403":
+          description: The request came from another website, or by an unknown host name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The server failed to write the response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /api/rooms/{id}/target:
     post:
       operationId: setRoomTarget
       summary: Change a room's target temperature.
       description: >-
-        The target is rounded to 0.5 °C. While a thermostat is off the target is
-        held and sent once it heats again, because writing a setpoint would
-        switch it back on. Requests from other websites get a 403.
+        The target is rounded to 0.5 °C. While a thermostat is off, or hasn't
+        reported yet, the target is held and sent once it heats again, because
+        writing a setpoint could switch it back on.
       parameters:
         - name: id
           in: path
@@ -46,15 +58,27 @@ paths:
               $ref: "#/components/schemas/SetTargetRequest"
       responses:
         "204":
-          description: The target was sent, or held while the thermostat is off.
+          description: The target was sent, or held until the thermostat can take it.
         "400":
           description: The body is invalid or the target is outside the allowed range.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "403":
+          description: The request came from another website, or by an unknown host name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: The room doesn't exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The server failed to write the response.
           content:
             application/json:
               schema:

@@ -57,10 +57,24 @@
   const roomsEl = document.getElementById('rooms');
   const errorEl = document.getElementById('error');
   const steps = [-1, -0.5, 0.5, 1];
+  const cards = new Map();
   let data = null;
+  // Commands go out one at a time, and while any is on its way a refresh could
+  // show a value from before it, so refreshes that overlap one are ignored.
+  let sending = 0;
+  let sendQueue = Promise.resolve();
+  let refreshGeneration = 0;
+  // Kept apart, so a good refresh doesn't wipe the reason a command failed.
+  let commandError = '';
+  let connectionError = '';
+
+  function showError() {
+    errorEl.textContent = commandError || connectionError;
+  }
 
   const degrees = v => v == null ? '–' : v.toFixed(1) + ' °C';
   const signed = s => (s > 0 ? '+' : '−') + Math.abs(s);
+  const inRange = v => v >= data.minTarget && v <= data.maxTarget;
 
   function describe(room) {
     if (room.mode === 'unknown') return 'Waiting for the thermostat';
@@ -68,72 +82,109 @@
     return room.heating ? 'Heating' : 'Not heating right now';
   }
 
-  function button(room, step) {
+  function makeButton(id, label, step) {
     const b = document.createElement('button');
     b.textContent = signed(step);
-    b.setAttribute('aria-label', room.label + ' target ' + signed(step) + ' degrees');
-    const next = room.target == null ? null : room.target + step;
-    b.disabled = next == null || next < data.minTarget || next > data.maxTarget;
-    b.addEventListener('click', () => setTarget(room.id, next));
-    return b;
+    b.setAttribute('aria-label', label + ' target ' + signed(step) + ' degrees');
+    // Worked out at the tap, so quick taps add up.
+    b.addEventListener('click', () => tap(id, step));
+    return { el: b, step };
   }
 
+  function makeCard(room) {
+    const el = document.createElement('section');
+    el.className = 'room';
+
+    const head = document.createElement('div');
+    head.className = 'head';
+    const name = document.createElement('h2');
+    name.textContent = room.label;
+    const now = document.createElement('span');
+    now.className = 'now';
+    head.append(name, now);
+
+    const state = document.createElement('div');
+
+    const target = document.createElement('div');
+    target.className = 'target';
+    const value = document.createElement('div');
+    value.className = 'value';
+    const buttons = steps.map(step => makeButton(room.id, room.label, step));
+    target.append(buttons[0].el, buttons[1].el, value, buttons[2].el, buttons[3].el);
+
+    el.append(head, state, target);
+    roomsEl.append(el);
+    return { now, state, value, buttons };
+  }
+
+  // Updates the existing elements: replacing a button during a tap loses the tap.
   function render() {
-    roomsEl.replaceChildren(...data.rooms.map(room => {
-      const card = document.createElement('section');
-      card.className = 'room';
-
-      const head = document.createElement('div');
-      head.className = 'head';
-      const name = document.createElement('h2');
-      name.textContent = room.label;
-      const now = document.createElement('span');
-      now.className = 'now';
-      now.textContent = degrees(room.temperature);
-      head.append(name, now);
-
-      const state = document.createElement('div');
-      state.className = 'state' + (room.heating ? ' heating' : '');
-      state.textContent = describe(room);
-
-      const target = document.createElement('div');
-      target.className = 'target';
-      const value = document.createElement('div');
-      value.className = 'value';
-      value.textContent = room.target == null ? '–' : room.target.toFixed(1);
-      value.setAttribute('aria-label', 'Target ' + degrees(room.target));
-      target.append(button(room, steps[0]), button(room, steps[1]), value, button(room, steps[2]), button(room, steps[3]));
-
-      card.append(head, state, target);
-      return card;
-    }));
-  }
-
-  async function refresh() {
-    try {
-      const res = await fetch('api/rooms');
-      if (!res.ok) throw new Error(res.statusText);
-      data = await res.json();
-      render();
-      errorEl.textContent = '';
-    } catch {
-      errorEl.textContent = 'Can\'t reach the server. Are you on the home Wi-Fi?';
+    for (const room of data.rooms) {
+      if (!cards.has(room.id)) cards.set(room.id, makeCard(room));
+      const card = cards.get(room.id);
+      card.now.textContent = degrees(room.temperature);
+      card.state.className = 'state' + (room.heating ? ' heating' : '');
+      card.state.textContent = describe(room);
+      card.value.textContent = room.target == null ? '–' : room.target.toFixed(1);
+      card.value.setAttribute('aria-label', 'Target ' + degrees(room.target));
+      for (const b of card.buttons) {
+        b.el.disabled = room.target == null || !inRange(room.target + b.step);
+      }
     }
   }
 
-  async function setTarget(id, target) {
+  async function refresh() {
+    const generation = ++refreshGeneration;
+    try {
+      const res = await fetch('api/rooms');
+      if (!res.ok) throw new Error(res.statusText);
+      const next = await res.json();
+      if (sending > 0 || generation !== refreshGeneration) return;
+      data = next;
+      render();
+      connectionError = '';
+    } catch {
+      if (generation !== refreshGeneration) return;
+      connectionError = 'Can\'t reach the server. Are you on the home Wi-Fi?';
+    }
+    showError();
+  }
+
+  function tap(id, step) {
+    const room = data.rooms.find(r => r.id === id);
+    if (room.target == null || !inRange(room.target + step)) return;
+    room.target += step;
+    render();
+
+    const target = room.target;
+    sending++;
+    sendQueue = sendQueue.then(() => send(id, target)).finally(() => {
+      sending--;
+      if (sending === 0) refresh();
+    });
+  }
+
+  async function errorMessage(res) {
+    try {
+      return (await res.json()).message;
+    } catch {
+      return res.statusText || 'error ' + res.status;
+    }
+  }
+
+  async function send(id, target) {
     try {
       const res = await fetch('api/rooms/' + encodeURIComponent(id) + '/target', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target }),
       });
-      if (!res.ok) throw new Error((await res.json()).message);
-      errorEl.textContent = '';
+      if (!res.ok) throw new Error(await errorMessage(res));
+      commandError = '';
     } catch (e) {
-      errorEl.textContent = 'Not changed: ' + e.message;
+      commandError = 'Not changed: ' + e.message;
     }
-    refresh();
+    showError();
   }
 
   refresh();

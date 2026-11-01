@@ -30,23 +30,25 @@ func (f *fakeRooms) SetTarget(id string, target float64) error {
 	return f.err
 }
 
+const testHost = "192.168.178.60:30081"
+
 func handler(rooms Rooms) http.Handler {
-	mux := http.NewServeMux()
-	Register(mux, rooms)
-	return http.NewCrossOriginProtection().Handler(mux)
+	return Handler(rooms, []string{"heating.example"})
 }
 
 func get(t *testing.T, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	handler(&fakeRooms{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Host = testHost
+	handler(&fakeRooms{}).ServeHTTP(rec, req)
 	return rec
 }
 
 func post(t *testing.T, h http.Handler, path, body string, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	req.Host = "home:30081"
+	req.Host = testHost
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -141,11 +143,48 @@ func TestOtherWebsitesAreRefused(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rec.Code)
 	}
+	var got api.Error
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got.Message == "" {
+		t.Fatalf("body %q isn't an Error: %v", rec.Body.String(), err)
+	}
 	if f.id != "" {
 		t.Fatal("the target was changed")
 	}
-	rec = post(t, handler(f), "/api/rooms/office/target", `{"target":20}`, map[string]string{"Origin": "http://home:30081"})
+	rec = post(t, handler(f), "/api/rooms/office/target", `{"target":20}`, map[string]string{"Origin": "http://" + testHost})
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("same origin: status = %d, want 204", rec.Code)
+	}
+}
+
+// With DNS rebinding the attacker's name points here, so Origin matches Host.
+func TestDNSRebindingIsRefused(t *testing.T) {
+	tests := []struct {
+		host string
+		want int
+	}{
+		{"evil.example", http.StatusForbidden},
+		{"evil.example:30081", http.StatusForbidden},
+		{"heating.example:30081", http.StatusNoContent},
+		{"HEATING.example", http.StatusNoContent},
+		{"localhost:8080", http.StatusNoContent},
+		{"192.168.178.60:30081", http.StatusNoContent},
+		{"[fd2a::1]:30081", http.StatusNoContent},
+	}
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			f := &fakeRooms{}
+			req := httptest.NewRequest(http.MethodPost, "/api/rooms/office/target", strings.NewReader(`{"target":20}`))
+			req.Host = tt.host
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Origin", "http://"+tt.host)
+			rec := httptest.NewRecorder()
+			handler(f).ServeHTTP(rec, req)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+			if tt.want == http.StatusForbidden && f.id != "" {
+				t.Fatal("the target was changed")
+			}
+		})
 	}
 }

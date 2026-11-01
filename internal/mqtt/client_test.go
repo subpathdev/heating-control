@@ -53,9 +53,16 @@ func TestParseThermostat(t *testing.T) {
 	}
 }
 
-func TestParseThermostatRejectsUnknownMode(t *testing.T) {
-	if _, err := parseThermostat([]byte(`{"system_mode":"Off"}`)); err == nil {
-		t.Fatal("want an error")
+func TestParseThermostatKeepsFieldsWithAnUnknownMode(t *testing.T) {
+	s, err := parseThermostat([]byte(`{"system_mode":"Off","occupied_heating_setpoint":20}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Mode == nil || *s.Mode != controller.ModeUnknown {
+		t.Fatalf("mode = %v, want unknown", s.Mode)
+	}
+	if s.Setpoint == nil || *s.Setpoint != 20 {
+		t.Fatalf("setpoint = %v, want 20", s.Setpoint)
 	}
 }
 

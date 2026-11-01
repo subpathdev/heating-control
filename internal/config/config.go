@@ -23,6 +23,9 @@ type Config struct {
 	MinTarget float64 `yaml:"minTarget"`
 	MaxTarget float64 `yaml:"maxTarget"`
 	Rooms     []Room  `yaml:"rooms"`
+	// AllowedHosts lists the host names the page is reached by. IP addresses and
+	// localhost always work, so it's only needed for a DNS name.
+	AllowedHosts []string `yaml:"allowedHosts"`
 }
 
 // Load reads and validates the file at path.

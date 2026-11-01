@@ -8,6 +8,7 @@
 //     value is never a target the user chose.
 //   - Writing a setpoint while it is off switches it back to heat, so a target
 //     changed during that time is held until the thermostat heats again.
+//   - After a write it can still send a few reports with the old setpoint.
 //   - It can go off on its own and return by itself, so "off" doesn't mean
 //     this program turned it off.
 package controller
@@ -15,8 +16,10 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"sync"
+	"time"
 
 	"github.com/subpathdev/heating-control/internal/config"
 )
@@ -42,6 +45,10 @@ func ParseMode(s string) (Mode, error) {
 		return ModeUnknown, fmt.Errorf("unknown system mode %q", s)
 	}
 }
+
+// echoGrace is how long a thermostat gets to confirm a write. A real TRVZB took
+// about 2 s, including the reports it sent with the old setpoint.
+const echoGrace = 15 * time.Second
 
 // ErrUnknownRoom is returned for a room that isn't configured.
 var ErrUnknownRoom = errors.New("unknown room")
@@ -82,19 +89,31 @@ type room struct {
 	mode       Mode
 	heating    bool
 	frost      *float64
+
+	// expected is a target that was sent, and expectUntil how long reports with
+	// another setpoint count as older than the write.
+	expected    *float64
+	expectUntil time.Time
+	flushing    bool
 }
 
 // Controller is safe for concurrent use.
 type Controller struct {
-	mu         sync.Mutex
+	// mu guards the rooms' state and is never held during a publish. rooms
+	// itself and each room's cfg don't change after New.
+	mu sync.Mutex
+	// sendMu keeps commands in order. Device reports never take it.
+	sendMu     sync.Mutex
+	flushes    sync.WaitGroup
 	thermostat Thermostat
+	now        func() time.Time
 	min, max   float64
 	rooms      []*room
 }
 
 // New returns a Controller for the configured rooms.
 func New(cfg *config.Config, thermostat Thermostat) *Controller {
-	c := &Controller{thermostat: thermostat, min: cfg.MinTarget, max: cfg.MaxTarget}
+	c := &Controller{thermostat: thermostat, now: time.Now, min: cfg.MinTarget, max: cfg.MaxTarget}
 	for _, r := range cfg.Rooms {
 		c.rooms = append(c.rooms, &room{cfg: r})
 	}
@@ -132,11 +151,13 @@ func (c *Controller) Rooms() []RoomStatus {
 	return out
 }
 
-// SetTarget changes a room's target, or holds it while the thermostat is off.
+// SetTarget changes a room's target. It holds the target while the thermostat
+// is off or hasn't reported, because a write could switch it back on.
+//
+// The room's state is changed first and c.mu released before publishing: a
+// device report needs c.mu, and the MQTT client can't read the broker's
+// acknowledgement while it is delivering a report.
 func (c *Controller) SetTarget(id string, target float64) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	r := c.find(id)
 	if r == nil {
 		return fmt.Errorf("%w: %q", ErrUnknownRoom, id)
@@ -147,20 +168,33 @@ func (c *Controller) SetTarget(id string, target float64) error {
 	}
 	target = math.Round(target*2) / 2
 
-	if r.mode == ModeOff {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
+	c.mu.Lock()
+	if !r.canWrite() {
 		r.pending = &target
+		c.mu.Unlock()
 		return nil
 	}
+	previous := r.target
+	r.pending = nil
+	c.expect(r, target)
+	c.mu.Unlock()
+
 	if err := c.thermostat.SetTarget(r.cfg.TRV, target); err != nil {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		r.target = previous
+		r.expected = nil
 		return err
 	}
-	r.target = &target
-	r.pending = nil
 	return nil
 }
 
-// HandleThermostatState records a thermostat's report.
-func (c *Controller) HandleThermostatState(trv string, s ThermostatState) error {
+// HandleThermostatState records a thermostat's report. It's called while the
+// MQTT client delivers a message, so it must not wait for a publish.
+func (c *Controller) HandleThermostatState(trv string, s ThermostatState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -172,7 +206,7 @@ func (c *Controller) HandleThermostatState(trv string, s ThermostatState) error 
 		}
 	}
 	if r == nil {
-		return nil
+		return
 	}
 
 	if s.Mode != nil {
@@ -187,19 +221,69 @@ func (c *Controller) HandleThermostatState(trv string, s ThermostatState) error 
 	if s.FrostProtection != nil {
 		r.frost = s.FrostProtection
 	}
-	if s.Setpoint != nil && r.mode != ModeOff && !r.isFrost(*s.Setpoint) {
-		// Someone may have turned the knob, so the thermostat wins.
-		r.target = s.Setpoint
+	if s.Setpoint == nil || r.mode == ModeOff || r.isFrost(*s.Setpoint) {
+		return
 	}
 
-	if r.pending != nil && r.mode != ModeUnknown && r.mode != ModeOff {
-		if err := c.thermostat.SetTarget(r.cfg.TRV, *r.pending); err != nil {
-			return err
-		}
-		r.target = r.pending
-		r.pending = nil
+	// Reports sent before a write took effect still carry the old setpoint.
+	// After the grace period the thermostat wins: someone may have turned the
+	// knob, or the write was lost.
+	if r.expected == nil || *s.Setpoint == *r.expected || !c.now().Before(r.expectUntil) {
+		r.target = s.Setpoint
+		r.expected = nil
 	}
-	return nil
+
+	// A thermostat back from off restores its own setpoint, so a held target
+	// only goes out once that has happened, or the restore would overwrite it.
+	if r.pending != nil && r.canWrite() && !r.flushing {
+		r.flushing = true
+		c.flushes.Add(1)
+		go c.flush(r)
+	}
+}
+
+// flush sends a held target. If that fails the target stays held, and the
+// thermostat's next report tries again.
+func (c *Controller) flush(r *room) {
+	defer c.flushes.Done()
+
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
+	c.mu.Lock()
+	r.flushing = false
+	if r.pending == nil || !r.canWrite() {
+		c.mu.Unlock()
+		return
+	}
+	target := *r.pending
+	previous := r.target
+	r.pending = nil
+	c.expect(r, target)
+	c.mu.Unlock()
+
+	if err := c.thermostat.SetTarget(r.cfg.TRV, target); err != nil {
+		log.Printf("%s: sending held target: %v", r.cfg.TRV, err)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if r.pending == nil {
+			r.pending = &target
+		}
+		r.target = previous
+		r.expected = nil
+	}
+}
+
+// expect records a target about to be sent. The caller holds c.mu.
+func (c *Controller) expect(r *room, target float64) {
+	r.target = &target
+	r.expected = &target
+	r.expectUntil = c.now().Add(echoGrace)
+}
+
+// Wait blocks until held targets being sent have finished.
+func (c *Controller) Wait() {
+	c.flushes.Wait()
 }
 
 // HandleRoomTemperature records a room sensor's report.
@@ -221,6 +305,12 @@ func (c *Controller) find(id string) *room {
 		}
 	}
 	return nil
+}
+
+// canWrite reports whether a setpoint write is safe. Writing to a thermostat
+// that is off, or may be, can switch it back on.
+func (r *room) canWrite() bool {
+	return r.mode != ModeOff && r.mode != ModeUnknown
 }
 
 // isFrost reports whether a setpoint is the frost protection value. The

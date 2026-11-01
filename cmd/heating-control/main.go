@@ -48,15 +48,17 @@ func main() {
 	mux := http.NewServeMux()
 	health.Register(mux, version, checker)
 	mux.Handle("GET /metrics", m.Handler())
-	web.Register(mux, ctrl)
+	// Probes and scrapes use the pod's IP and stay outside the page's checks.
+	mux.Handle("/", web.Handler(ctrl, cfg.AllowedHosts))
 
 	srv := &http.Server{
-		Addr: ":8080",
-		// The page has no login, so refuse requests from other websites.
-		Handler:           http.NewCrossOriginProtection().Handler(mux),
+		Addr:              ":8080",
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -69,4 +71,7 @@ func main() {
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+	// ListenAndServe returns as soon as Shutdown starts, so let requests finish.
+	<-shutdownDone
+	ctrl.Wait()
 }

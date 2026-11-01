@@ -19,7 +19,7 @@ const publishTimeout = 5 * time.Second
 
 // Sink receives what the devices report.
 type Sink interface {
-	HandleThermostatState(trv string, s controller.ThermostatState) error
+	HandleThermostatState(trv string, s controller.ThermostatState)
 	HandleRoomTemperature(sensor string, t float64)
 }
 
@@ -86,9 +86,7 @@ func (c *Client) onConnect(sink Sink, client paho.Client) {
 				log.Printf("%s: %v", trv, err)
 				return
 			}
-			if err := sink.HandleThermostatState(trv, s); err != nil {
-				log.Printf("%s: %v", trv, err)
-			}
+			sink.HandleThermostatState(trv, s)
 		}))
 		if r.Sensor != "" {
 			sensor := r.Sensor
@@ -157,9 +155,10 @@ func parseThermostat(payload []byte) (controller.ThermostatState, error) {
 		FrostProtection:  m.FrostProtection,
 	}
 	if m.SystemMode != nil {
+		// The other fields stay useful, and an unknown mode holds new targets.
 		mode, err := controller.ParseMode(*m.SystemMode)
 		if err != nil {
-			return controller.ThermostatState{}, err
+			log.Printf("%v", err)
 		}
 		s.Mode = &mode
 	}
