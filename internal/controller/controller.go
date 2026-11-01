@@ -2,9 +2,11 @@
 // thermostat reports, and sends commands until the two match.
 //
 // HTTP handlers and device reports only change state under mu and wake Run,
-// which is the only place that talks to a thermostat or the Store. So nothing
-// that delivers a report ever waits for a publish: the MQTT client couldn't read
-// the broker's acknowledgement while it does.
+// which is the only place that talks to a thermostat. So nothing that delivers a
+// report ever waits for a publish.
+//
+// All state is in memory. After a restart a room that was airing stays off until
+// someone taps "Heat again" on the page.
 //
 // Four behaviours of the Sonoff TRVZB shape this code. They were measured on a
 // real device (firmware 1.3.0):
@@ -15,7 +17,8 @@
 //     changed during that time is held until it can be sent.
 //   - After a write it can still send a few reports with the old setpoint.
 //   - It can go off on its own and return by itself, so "off" doesn't mean this
-//     program turned it off. Only rooms with a saved record are ever restored.
+//     program turned it off. A room is only turned back on if this program turned
+//     it off, or someone asks for it.
 package controller
 
 import (
@@ -88,22 +91,6 @@ type Thermostat interface {
 	Apply(trv string, cmd Command) error
 }
 
-// Store saves what must survive a restart.
-type Store interface {
-	Load() (map[string]RoomRecord, error)
-	Save(records map[string]RoomRecord) error
-}
-
-// RoomRecord is a room's saved state.
-type RoomRecord struct {
-	Target      *float64
-	TargetDirty bool
-	AiringUntil *time.Time
-	RestoreMode Mode
-	Restoring   bool
-	LastOnMode  Mode
-}
-
 // ThermostatState is a thermostat's report. Fields it didn't include are nil.
 type ThermostatState struct {
 	Mode             *Mode
@@ -131,40 +118,32 @@ type RoomStatus struct {
 // Controller is safe for concurrent use.
 type Controller struct {
 	thermostat Thermostat
-	store      Store
 	now        func() time.Time
 	min, max   float64
 	wake       chan struct{}
 
-	// mu guards the rooms' state and is never held during a publish or save.
-	// rooms itself and each room's cfg don't change after New.
-	mu      sync.Mutex
-	rooms   []*room
-	changed bool
+	// mu guards the rooms' state and is never held during a publish. rooms itself
+	// and each room's cfg don't change after New.
+	mu    sync.Mutex
+	rooms []*room
 }
 
-// New returns a Controller for the configured rooms, with what store has saved.
-// A store that can't be read is logged, and the rooms start empty.
-func New(cfg *config.Config, thermostat Thermostat, store Store) *Controller {
+// New returns a Controller for the configured rooms.
+func New(cfg *config.Config, thermostat Thermostat) *Controller {
 	c := &Controller{
 		thermostat: thermostat,
-		store:      store,
 		now:        time.Now,
 		min:        cfg.MinTarget,
 		max:        cfg.MaxTarget,
 		wake:       make(chan struct{}, 1),
 	}
-	records, err := store.Load()
-	if err != nil {
-		log.Printf("loading saved state: %v", err)
-	}
 	for _, r := range cfg.Rooms {
-		c.rooms = append(c.rooms, newRoom(r, records[r.ID]))
+		c.rooms = append(c.rooms, &room{cfg: r})
 	}
 	return c
 }
 
-// Run sends commands and saves state until ctx is done.
+// Run sends commands until ctx is done.
 func (c *Controller) Run(ctx context.Context) {
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
@@ -172,7 +151,6 @@ func (c *Controller) Run(ctx context.Context) {
 		c.tick()
 		select {
 		case <-ctx.Done():
-			c.save()
 			return
 		case <-ticker.C:
 		case <-c.wake:
@@ -185,9 +163,7 @@ func (c *Controller) tick() {
 	for _, r := range c.rooms {
 		c.mu.Lock()
 		now := c.now()
-		if r.advance(now) {
-			c.changed = true
-		}
+		r.advance(now)
 		cmd, send := r.decide(now)
 		if send {
 			r.attempts++
@@ -199,9 +175,6 @@ func (c *Controller) tick() {
 		if !send {
 			continue
 		}
-		// Saved first: after a crash a room that is off with no record would stay
-		// off, because only rooms with a record get restored.
-		c.save()
 		if err := c.thermostat.Apply(r.cfg.TRV, cmd); err != nil {
 			log.Printf("%s: %s: %v", r.cfg.TRV, cmd.Kind(), err)
 			// Never reached the thermostat, so it says nothing about it.
@@ -214,29 +187,6 @@ func (c *Controller) tick() {
 		}
 		c.mu.Lock()
 		r.publishFailed = false
-		c.mu.Unlock()
-	}
-	c.save()
-}
-
-// save writes the rooms if they changed. A failed save tries again next tick.
-func (c *Controller) save() {
-	c.mu.Lock()
-	if !c.changed {
-		c.mu.Unlock()
-		return
-	}
-	records := make(map[string]RoomRecord, len(c.rooms))
-	for _, r := range c.rooms {
-		records[r.cfg.ID] = r.record()
-	}
-	c.changed = false
-	c.mu.Unlock()
-
-	if err := c.store.Save(records); err != nil {
-		log.Printf("saving state: %v", err)
-		c.mu.Lock()
-		c.changed = true
 		c.mu.Unlock()
 	}
 }
@@ -279,7 +229,6 @@ func (c *Controller) SetTarget(id string, target float64) error {
 
 	c.mu.Lock()
 	r.setTarget(target)
-	c.changed = true
 	c.mu.Unlock()
 	c.signal()
 	return nil
@@ -294,7 +243,6 @@ func (c *Controller) StartAiring(id string, d time.Duration) error {
 	}
 	c.mu.Lock()
 	r.startAiring(c.now().Add(d))
-	c.changed = true
 	c.mu.Unlock()
 	c.signal()
 	return nil
@@ -308,9 +256,7 @@ func (c *Controller) StopAiring(id string) error {
 		return fmt.Errorf("%w: %q", ErrUnknownRoom, id)
 	}
 	c.mu.Lock()
-	if r.heatAgain(c.now()) {
-		c.changed = true
-	}
+	r.heatAgain(c.now())
 	c.mu.Unlock()
 	c.signal()
 	return nil
@@ -321,9 +267,7 @@ func (c *Controller) HandleThermostatState(trv string, s ThermostatState) {
 	c.mu.Lock()
 	for _, r := range c.rooms {
 		if r.cfg.TRV == trv {
-			if r.report(s, c.now()) {
-				c.changed = true
-			}
+			r.report(s, c.now())
 			break
 		}
 	}

@@ -63,7 +63,7 @@ type room struct {
 	settled bool
 	onSince time.Time
 
-	// What the room should be doing. Saved.
+	// What the room should be doing.
 	target      *float64
 	targetDirty bool
 	airingUntil *time.Time
@@ -86,29 +86,6 @@ type room struct {
 	offConfirmed bool
 	flips        int
 	targetFailed bool
-}
-
-func newRoom(cfg config.Room, rec RoomRecord) *room {
-	return &room{
-		cfg:         cfg,
-		target:      rec.Target,
-		targetDirty: rec.TargetDirty,
-		airingUntil: rec.AiringUntil,
-		restoreMode: rec.RestoreMode,
-		restoring:   rec.Restoring,
-		lastOnMode:  rec.LastOnMode,
-	}
-}
-
-func (r *room) record() RoomRecord {
-	return RoomRecord{
-		Target:      r.target,
-		TargetDirty: r.targetDirty,
-		AiringUntil: r.airingUntil,
-		RestoreMode: r.restoreMode,
-		Restoring:   r.restoring,
-		LastOnMode:  r.lastOnMode,
-	}
 }
 
 // decide returns the command the room needs now, if any. It changes nothing.
@@ -144,16 +121,14 @@ func (r *room) due(now time.Time) bool {
 	return !now.Before(r.lastSent.Add(wait))
 }
 
-// advance applies what time alone changes, and reports whether anything to save
-// changed.
-func (r *room) advance(now time.Time) bool {
+// advance applies what time alone changes.
+func (r *room) advance(now time.Time) {
 	if r.canWrite() && !r.settled && !now.Before(r.onSince.Add(settleTime)) {
 		r.settled = true
 	}
 	switch {
 	case r.airingUntil != nil && !now.Before(*r.airingUntil):
 		r.endAiring(now)
-		return true
 	case r.targetDirty && r.airingUntil == nil && !r.restoring && r.canWrite() &&
 		r.attempts >= maxAttempts && !now.Before(r.lastSent.Add(retryInterval)):
 		// A knob turn and a lost write look the same, so the thermostat wins and
@@ -165,14 +140,11 @@ func (r *room) advance(now time.Time) bool {
 		if r.setpoint != nil && !r.isFrost(*r.setpoint) {
 			r.target = r.setpoint
 		}
-		return true
 	}
-	return false
 }
 
-// report records a thermostat's report and reports whether anything to save
-// changed.
-func (r *room) report(s ThermostatState, now time.Time) bool {
+// report records a thermostat's report.
+func (r *room) report(s ThermostatState, now time.Time) {
 	r.lastSeen = &now
 	if s.Heating != nil {
 		r.heating = *s.Heating
@@ -187,7 +159,6 @@ func (r *room) report(s ThermostatState, now time.Time) bool {
 		r.setpoint = s.Setpoint
 	}
 
-	changed := false
 	if s.Mode != nil {
 		wasOn := r.canWrite()
 		r.mode = *s.Mode
@@ -195,21 +166,16 @@ func (r *room) report(s ThermostatState, now time.Time) bool {
 			if !wasOn {
 				r.onSince = now
 			}
-			if r.lastOnMode != r.mode {
-				r.lastOnMode = r.mode
-				changed = true
-			}
+			r.lastOnMode = r.mode
 		}
 		if r.mode == ModeOff {
 			r.settled = false
 			r.confirmAfter = time.Time{}
 		}
-		if r.reportAiringMode() {
-			changed = true
-		}
+		r.reportAiringMode()
 	}
 	if r.setpoint == nil {
-		return changed
+		return
 	}
 	own := r.canWrite() && !r.isFrost(*r.setpoint)
 	if own {
@@ -223,50 +189,45 @@ func (r *room) report(s ThermostatState, now time.Time) bool {
 			r.restoring = false
 			r.targetDirty = false
 			r.attempts = 0
-			changed = true
 		}
 	case r.targetDirty:
 		if r.sentTarget != nil && *r.sentTarget == *r.target && *r.setpoint == *r.target {
 			r.targetDirty = false
 			r.attempts = 0
-			changed = true
 		}
 	case own && (r.target == nil || *r.setpoint != *r.target):
 		// Someone turned the knob.
 		r.target = r.setpoint
 		r.targetFailed = false
-		changed = true
 	}
-	return changed
 }
 
 // reportAiringMode handles a mode report during airing.
-func (r *room) reportAiringMode() bool {
+func (r *room) reportAiringMode() {
 	if r.airingUntil == nil {
-		return false
+		return
 	}
 	if r.mode == ModeOff {
 		if !r.offConfirmed {
 			r.attempts = 0
 		}
 		r.offConfirmed = true
-		return false
+		return
 	}
 	if r.mode == ModeUnknown || !r.offConfirmed {
-		return false
+		return
 	}
 	r.offConfirmed = false
 	r.attempts = 0
 	r.flips++
 	if r.flips < maxFlips {
-		return false
+		return
 	}
 	// The thermostat is on because someone wants it on, so nothing to restore.
 	log.Printf("%s: left off %d times, ending airing", r.cfg.TRV, r.flips)
 	r.airingUntil = nil
 	r.restoring = false
 	r.flips = 0
-	return true
 }
 
 func (r *room) setTarget(target float64) {
@@ -294,19 +255,15 @@ func (r *room) startAiring(until time.Time) {
 	r.airingUntil = &until
 }
 
-// heatAgain ends airing, or turns a thermostat that is off back on, and reports
-// whether that changed anything.
-func (r *room) heatAgain(now time.Time) bool {
+// heatAgain ends airing, or turns a thermostat that is off back on.
+func (r *room) heatAgain(now time.Time) {
 	switch {
 	case r.airingUntil != nil:
 		r.endAiring(now)
-		return true
 	case r.mode == ModeOff && !r.restoring:
 		r.restoreMode = r.onMode()
 		r.endAiring(now)
-		return true
 	}
-	return false
 }
 
 // onMode returns the mode to go back to.

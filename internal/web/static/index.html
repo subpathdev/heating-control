@@ -92,7 +92,7 @@
       case 'restoring': return 'Airing is over: turning the heating back on';
     }
     if (room.mode === 'unknown') return 'Waiting for the thermostat';
-    if (room.mode === 'off') return 'Not heating: the thermostat turned itself off';
+    if (room.mode === 'off') return 'Not heating: the thermostat is off';
     return room.heating ? 'Heating' : 'Not heating right now';
   }
 

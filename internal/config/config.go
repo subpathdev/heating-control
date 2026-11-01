@@ -18,10 +18,7 @@ type Room struct {
 
 // Config is the program's configuration file.
 type Config struct {
-	// StateFile is where airing and held targets are saved. Its folder must be
-	// writable and survive restarts.
-	StateFile string `yaml:"stateFile"`
-	Broker    string `yaml:"broker"`
+	Broker string `yaml:"broker"`
 	// ClientID must be unique on the broker: a second client with the same ID
 	// disconnects the first.
 	ClientID  string  `yaml:"clientId"`
@@ -49,7 +46,6 @@ func parse(data []byte) (*Config, error) {
 		BaseTopic: "zigbee2mqtt",
 		MinTarget: 10,
 		MaxTarget: 25,
-		StateFile: "/var/lib/heating-control/state.json",
 	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err

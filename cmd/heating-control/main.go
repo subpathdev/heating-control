@@ -17,7 +17,6 @@ import (
 	"github.com/subpathdev/heating-control/internal/health"
 	"github.com/subpathdev/heating-control/internal/metrics"
 	"github.com/subpathdev/heating-control/internal/mqtt"
-	"github.com/subpathdev/heating-control/internal/store"
 	"github.com/subpathdev/heating-control/internal/web"
 )
 
@@ -38,18 +37,16 @@ func main() {
 
 	client := mqtt.New(cfg)
 	m := metrics.New(version)
-	state := store.New(cfg.StateFile)
-	ctrl := controller.New(cfg, m.Thermostat(client), state)
+	ctrl := controller.New(cfg, m.Thermostat(client))
 	client.Start(ctrl)
 	defer client.Close()
 
 	checker := client.Checker()
 	m.AddChecker(checker)
-	m.AddChecker(state)
 	m.AddRooms(ctrl)
 
 	mux := http.NewServeMux()
-	health.Register(mux, version, checker, state)
+	health.Register(mux, version, checker)
 	mux.Handle("GET /metrics", m.Handler())
 	// Probes and scrapes use the pod's IP and stay outside the page's checks.
 	mux.Handle("/", web.Handler(ctrl, checker, cfg.AllowedHosts))

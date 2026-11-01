@@ -32,45 +32,22 @@ func (f *fakeThermostat) kinds() []string {
 	return out
 }
 
-type fakeStore struct {
-	records map[string]RoomRecord
-	loadErr error
-	saveErr error
-	saves   int
-}
-
-func (f *fakeStore) Load() (map[string]RoomRecord, error) { return f.records, f.loadErr }
-func (f *fakeStore) Save(r map[string]RoomRecord) error {
-	if f.saveErr != nil {
-		return f.saveErr
-	}
-	f.records = r
-	f.saves++
-	return nil
-}
-
 // harness drives a Controller by hand: time and ticks only move when told to.
 type harness struct {
-	t     *testing.T
-	c     *Controller
-	f     *fakeThermostat
-	store *fakeStore
-	now   time.Time
+	t   *testing.T
+	c   *Controller
+	f   *fakeThermostat
+	now time.Time
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	return newHarnessWithStore(t, &fakeStore{})
-}
-
-func newHarnessWithStore(t *testing.T, store *fakeStore) *harness {
-	t.Helper()
-	h := &harness{t: t, f: &fakeThermostat{}, store: store, now: time.Unix(1000, 0)}
+	h := &harness{t: t, f: &fakeThermostat{}, now: time.Unix(1000, 0)}
 	h.c = New(&config.Config{
 		MinTarget: 10,
 		MaxTarget: 25,
 		Rooms:     []config.Room{{ID: "office", Label: "Office", TRV: "trv-office", Sensor: "sensor-office"}},
-	}, h.f, store)
+	}, h.f)
 	h.c.now = func() time.Time { return h.now }
 	return h
 }
@@ -517,32 +494,6 @@ func TestRestoreIsConfirmedOnceTheWaitRunsOut(t *testing.T) {
 	}
 }
 
-// Saved first: a crash during the publish must leave a record of the airing.
-func TestAiringIsSavedBeforeOffIsSent(t *testing.T) {
-	store := &fakeStore{}
-	h := newHarnessWithStore(t, store)
-	h.report("heat", 20)
-	h.c.tick()
-
-	var savedAtSend *RoomRecord
-	h.c.thermostat = thermostatFunc(func(string, Command) error {
-		rec := store.records["office"]
-		savedAtSend = &rec
-		return nil
-	})
-	if err := h.c.StartAiring("office", time.Hour); err != nil {
-		t.Fatal(err)
-	}
-	h.c.tick()
-	if savedAtSend == nil || savedAtSend.AiringUntil == nil {
-		t.Fatalf("saved at send = %+v, want the airing", savedAtSend)
-	}
-}
-
-type thermostatFunc func(string, Command) error
-
-func (f thermostatFunc) Apply(trv string, cmd Command) error { return f(trv, cmd) }
-
 func TestStopAiringWithoutAiringDoesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.report("heat", 20)
@@ -731,114 +682,14 @@ func TestLostRestoreKeepsGoing(t *testing.T) {
 	}
 }
 
-func TestRestartDuringAiringKeepsItsEndTime(t *testing.T) {
-	store := &fakeStore{}
-	h := newHarnessWithStore(t, store)
-	h.report("heat", 20)
-	h.startAiring(time.Hour)
-	h.report("off", 7)
-
-	again := newHarnessWithStore(t, store)
-	again.now = h.now.Add(10 * time.Minute)
-	again.c.tick()
-	// The thermostat hasn't reported yet, and off is safe to repeat.
-	again.wantKinds("off")
-	again.report("off", 7)
-	if got := again.status().AiringState; got != AiringActive {
-		t.Fatalf("state = %s, want active", got)
-	}
-	if got := again.target(); got != 20 {
-		t.Fatalf("target = %v, want the saved 20", got)
-	}
-
-	again.advance(50 * time.Minute)
-	again.wantKinds("off", "restore")
-	cmd := again.f.sent[1]
-	if *cmd.Mode != ModeHeat || *cmd.Target != 20 {
-		t.Fatalf("restored %v/%v", *cmd.Mode, *cmd.Target)
-	}
-}
-
-func TestRestartAfterTheEndTimeRestoresAtStart(t *testing.T) {
-	store := &fakeStore{}
-	h := newHarnessWithStore(t, store)
-	h.report("heat", 20)
-	h.startAiring(time.Minute)
-	h.report("off", 7)
-
-	again := newHarnessWithStore(t, store)
-	again.now = h.now.Add(time.Hour)
-	again.c.tick()
-	again.wantKinds("restore")
-}
-
-func TestRestartKeepsTheLastOnMode(t *testing.T) {
-	store := &fakeStore{}
-	h := newHarnessWithStore(t, store)
-	h.report("auto", 20)
-	h.report("off", 7)
-
-	again := newHarnessWithStore(t, store)
-	again.report("off", 7)
-	again.startAiring(time.Minute)
-	again.advance(time.Minute)
-	again.wantKinds("restore")
-	if got := *again.f.sent[0].Mode; got != ModeAuto {
-		t.Fatalf("restored %s, want auto", got)
-	}
-}
-
-func TestRestartKeepsAHeldTarget(t *testing.T) {
-	store := &fakeStore{}
-	h := newHarnessWithStore(t, store)
-	h.report("heat", 20)
-	h.report("off", 7)
-	h.setTarget(22)
-
-	again := newHarnessWithStore(t, store)
-	again.report("off", 7)
-	if got := again.status().TargetState; got != TargetHeld {
-		t.Fatalf("state = %s, want held", got)
-	}
-	again.report("heat", 20)
-	again.wantKinds("set_target")
-}
-
-// Only saved records are restored: the thermostat can go off by itself.
-func TestRoomOffAtStartWithoutARecordIsLeftAlone(t *testing.T) {
+// The thermostat can go off by itself, so only a tap turns it back on.
+func TestRoomThatIsOffIsLeftAlone(t *testing.T) {
 	h := newHarness(t)
 	h.report("off", 7)
 	h.advance(time.Hour)
 	h.wantKinds()
 	if got := h.status().AiringState; got != AiringNone {
 		t.Fatalf("state = %s, want none", got)
-	}
-}
-
-func TestUnreadableStoreStartsEmpty(t *testing.T) {
-	h := newHarnessWithStore(t, &fakeStore{loadErr: errors.New("corrupt")})
-	h.report("heat", 20)
-	if got := h.target(); got != 20 {
-		t.Fatalf("target = %v, want 20", got)
-	}
-}
-
-func TestFailedSaveIsRetried(t *testing.T) {
-	store := &fakeStore{saveErr: errors.New("disk full")}
-	h := newHarnessWithStore(t, store)
-	h.report("heat", 20)
-	h.startAiring(time.Hour)
-	if store.saves != 0 {
-		t.Fatal("saved despite the error")
-	}
-	store.saveErr = nil
-	h.advance(time.Second)
-	if store.saves != 1 || store.records["office"].AiringUntil == nil {
-		t.Fatalf("saves = %d, records = %+v", store.saves, store.records)
-	}
-	h.advance(time.Second)
-	if store.saves != 1 {
-		t.Fatalf("saved %d times without a change", store.saves)
 	}
 }
 
@@ -885,7 +736,7 @@ func TestRunDoesntBlockReportsDuringAPublish(t *testing.T) {
 		MinTarget: 10,
 		MaxTarget: 25,
 		Rooms:     []config.Room{{ID: "office", Label: "Office", TRV: "trv-office"}},
-	}, block, &fakeStore{})
+	}, block)
 	c.HandleThermostatState("trv-office", state("heat", 20))
 
 	ctx, cancel := context.WithCancel(context.Background())
