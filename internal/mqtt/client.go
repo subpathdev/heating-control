@@ -17,6 +17,8 @@ import (
 
 const publishTimeout = 5 * time.Second
 
+var errNotConnected = errors.New("not connected to the broker")
+
 // Sink receives what the devices report.
 type Sink interface {
 	HandleThermostatState(trv string, s controller.ThermostatState)
@@ -68,7 +70,13 @@ func (c *Client) SetTarget(trv string, target float64) error {
 	return c.publish(trv, "set", map[string]any{"occupied_heating_setpoint": target})
 }
 
+// publish refuses to send while disconnected. During an outage paho would keep
+// the message and send it after reconnecting, long after the caller was told it
+// failed, and a late setpoint switches a thermostat that is off back to heat.
 func (c *Client) publish(device, verb string, payload any) error {
+	if !c.client.IsConnectionOpen() {
+		return errNotConnected
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err

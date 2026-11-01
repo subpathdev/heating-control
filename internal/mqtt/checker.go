@@ -1,9 +1,6 @@
 package mqtt
 
-import (
-	"context"
-	"errors"
-)
+import "context"
 
 // connection is the part of the MQTT client the health check needs.
 type connection interface {
@@ -18,7 +15,7 @@ func (c connectionChecker) Name() string { return "mqtt" }
 
 func (c connectionChecker) Check(context.Context) error {
 	if !c.conn.IsConnectionOpen() {
-		return errors.New("not connected")
+		return errNotConnected
 	}
 	return nil
 }

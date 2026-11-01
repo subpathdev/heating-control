@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	paho "github.com/eclipse/paho.mqtt.golang"
+
 	"github.com/subpathdev/heating-control/internal/controller"
 )
 
@@ -19,6 +21,45 @@ func TestConnectionChecker(t *testing.T) {
 	}
 	if err := (connectionChecker{conn: fakeConnection(false)}).Check(context.Background()); err == nil {
 		t.Fatal("disconnected: want an error")
+	}
+}
+
+// fakePaho embeds the interface, so only what publish uses is implemented.
+type fakePaho struct {
+	paho.Client
+	open   bool
+	topics []string
+}
+
+func (f *fakePaho) IsConnectionOpen() bool { return f.open }
+
+func (f *fakePaho) Publish(topic string, _ byte, _ bool, _ any) paho.Token {
+	f.topics = append(f.topics, topic)
+	return fakePahoToken{}
+}
+
+type fakePahoToken struct{ paho.Token }
+
+func (fakePahoToken) WaitTimeout(time.Duration) bool { return true }
+func (fakePahoToken) Error() error                   { return nil }
+
+func TestSetTargetFailsFastWhileDisconnected(t *testing.T) {
+	f := &fakePaho{}
+	c := &Client{base: "zigbee2mqtt", client: f}
+
+	if err := c.SetTarget("trv-office", 20); !errors.Is(err, errNotConnected) {
+		t.Fatalf("err = %v, want errNotConnected", err)
+	}
+	if len(f.topics) != 0 {
+		t.Fatalf("handed %v to paho, which would send it after reconnecting", f.topics)
+	}
+
+	f.open = true
+	if err := c.SetTarget("trv-office", 20); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.topics) != 1 || f.topics[0] != "zigbee2mqtt/trv-office/set" {
+		t.Fatalf("published %v", f.topics)
 	}
 }
 
