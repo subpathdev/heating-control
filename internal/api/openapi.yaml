@@ -135,7 +135,9 @@ paths:
     delete:
       operationId: stopRoomAiring
       summary: End airing now and heat again.
-      description: Does nothing if the room isn't airing.
+      description: >-
+        If the room isn't airing but its thermostat is off, this turns it back on
+        with its last mode and target. Otherwise it does nothing.
       parameters:
         - name: id
           in: path

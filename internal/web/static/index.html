@@ -173,8 +173,9 @@
         b.el.disabled = room.target == null || !inRange(room.target + b.step);
       }
       const airing = room.airingState === 'starting' || room.airingState === 'active';
+      const offAlone = room.airingState === 'none' && room.mode === 'off';
       for (const b of card.start) b.hidden = airing;
-      card.stop.hidden = !airing;
+      card.stop.hidden = !airing && !offAlone;
       const n = note(room);
       card.problem.className = 'note' + (n.problem ? ' problem' : '');
       card.problem.textContent = n.text;

@@ -77,9 +77,10 @@ func (c *Client) Apply(trv string, cmd controller.Command) error {
 	return c.publish(trv, "set", payload)
 }
 
-// publish refuses to send while disconnected. During an outage paho would keep
-// the message and send it after reconnecting, long after the caller was told it
-// failed, and a late setpoint switches a thermostat that is off back to heat.
+// publish sends with QoS 0 and refuses to send while disconnected. Paho keeps
+// QoS 1 messages and resends them after reconnecting, and a late off or setpoint
+// can undo what has been decided since. The controller already repeats a command
+// until the thermostat's report confirms it, so this loses nothing.
 func (c *Client) publish(device, verb string, payload any) error {
 	if !c.client.IsConnectionOpen() {
 		return errNotConnected
@@ -88,7 +89,7 @@ func (c *Client) publish(device, verb string, payload any) error {
 	if err != nil {
 		return err
 	}
-	return waitForToken(c.client.Publish(fmt.Sprintf("%s/%s/%s", c.base, device, verb), 1, false, data), publishTimeout)
+	return waitForToken(c.client.Publish(fmt.Sprintf("%s/%s/%s", c.base, device, verb), 0, false, data), publishTimeout)
 }
 
 func (c *Client) onConnect(sink Sink, client paho.Client) {

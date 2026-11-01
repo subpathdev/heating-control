@@ -9,7 +9,7 @@ A small web page to adjust the heating per room from a phone on the home network
 - A target changed during airing is applied when it ends.
 - A thermostat leaving off during airing gets off once more. If it leaves off again, someone is at the radiator, so airing ends.
 - Commands repeat until the thermostat confirms them, every 30 s for about 5 minutes. A target then gives up and shows the thermostat's value. Off and heat-again keep trying every 5 minutes and show a problem on the page, because giving up would mean heating with the window open or a cold room.
-- A thermostat that turned itself off is left alone: only rooms this program turned off get restored.
+- A thermostat that turned itself off is left alone, because only rooms this program turned off get restored. The page offers "Heat again" for it.
 
 ## Deployment
 

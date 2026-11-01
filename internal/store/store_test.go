@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,12 +46,41 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestCheckReportsAFailedSave(t *testing.T) {
+	f := New(filepath.Join(t.TempDir(), "missing", "state.json"))
+	if err := f.Save(nil); err == nil {
+		t.Fatal("want an error")
+	}
+	if err := f.Check(context.Background()); err == nil {
+		t.Fatal("the health check doesn't report it")
+	}
+}
+
 func TestLoadCorruptFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	if err := os.WriteFile(path, []byte("{nope"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(path).Load(); err == nil {
+	f := New(path)
+	if _, err := f.Load(); err == nil {
 		t.Fatal("want an error")
+	}
+	if err := f.Check(context.Background()); err == nil {
+		t.Fatal("the health check doesn't report it")
+	}
+	got, err := os.ReadFile(path + ".corrupt")
+	if err != nil || string(got) != "{nope" {
+		t.Fatalf("moved file = %q, %v", got, err)
+	}
+
+	// A later save neither touches it nor clears the report.
+	if err := f.Save(map[string]controller.RoomRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".corrupt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Check(context.Background()); err == nil {
+		t.Fatal("the report was cleared")
 	}
 }

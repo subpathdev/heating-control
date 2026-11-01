@@ -38,16 +38,18 @@ func main() {
 
 	client := mqtt.New(cfg)
 	m := metrics.New(version)
-	ctrl := controller.New(cfg, m.Thermostat(client), store.New(cfg.StateFile))
+	state := store.New(cfg.StateFile)
+	ctrl := controller.New(cfg, m.Thermostat(client), state)
 	client.Start(ctrl)
 	defer client.Close()
 
 	checker := client.Checker()
 	m.AddChecker(checker)
+	m.AddChecker(state)
 	m.AddRooms(ctrl)
 
 	mux := http.NewServeMux()
-	health.Register(mux, version, checker)
+	health.Register(mux, version, checker, state)
 	mux.Handle("GET /metrics", m.Handler())
 	// Probes and scrapes use the pod's IP and stay outside the page's checks.
 	mux.Handle("/", web.Handler(ctrl, checker, cfg.AllowedHosts))

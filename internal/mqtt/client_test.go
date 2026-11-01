@@ -30,12 +30,14 @@ type fakePaho struct {
 	open    bool
 	topics  []string
 	payload []byte
+	qos     byte
 }
 
 func (f *fakePaho) IsConnectionOpen() bool { return f.open }
 
-func (f *fakePaho) Publish(topic string, _ byte, _ bool, payload any) paho.Token {
+func (f *fakePaho) Publish(topic string, qos byte, _ bool, payload any) paho.Token {
 	f.topics = append(f.topics, topic)
+	f.qos = qos
 	f.payload, _ = payload.([]byte)
 	return fakePahoToken{}
 }
@@ -162,6 +164,9 @@ func TestApplyPayload(t *testing.T) {
 			}
 			if got := string(f.payload); got != tt.want {
 				t.Fatalf("payload = %s, want %s", got, tt.want)
+			}
+			if f.qos != 0 {
+				t.Fatalf("qos = %d: paho would resend it after a reconnect", f.qos)
 			}
 		})
 	}

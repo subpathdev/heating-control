@@ -311,6 +311,35 @@ func TestLostTargetIsRetriedThenGivenUp(t *testing.T) {
 	}
 }
 
+// Quick +0.5, -0.5: a report of the old value is older than the second command.
+func TestEqualReportDoesntConfirmATargetNotYetSent(t *testing.T) {
+	h := newHarness(t)
+	h.report("heat", 20)
+	h.setTarget(20.5)
+
+	if err := h.c.SetTarget("office", 20); err != nil {
+		t.Fatal(err)
+	}
+	h.c.HandleThermostatState("trv-office", state("heat", 20))
+	h.c.tick()
+	h.wantKinds("set_target", "set_target")
+	if got := *h.f.sent[1].Target; got != 20 {
+		t.Fatalf("sent %v, want 20", got)
+	}
+}
+
+// With the knob at the frost value it never reports another setpoint.
+func TestHeldTargetGoesOutOnceTheSettleTimeIsOver(t *testing.T) {
+	h := newHarness(t)
+	h.report("off", 7)
+	h.setTarget(22)
+	h.report("heat", 7)
+	h.wantKinds()
+
+	h.advance(settleTime)
+	h.wantKinds("set_target")
+}
+
 func TestTargetDoesntGiveUpWhileOffAndNeverBecomesFrost(t *testing.T) {
 	h := newHarness(t)
 	h.report("heat", 20)
@@ -423,6 +452,96 @@ func TestStopAiringRestoresNow(t *testing.T) {
 	h.c.tick()
 	h.wantKinds("off", "restore")
 }
+
+func TestStopAiringTurnsAThermostatThatIsOffBackOn(t *testing.T) {
+	h := newHarness(t)
+	h.report("auto", 20)
+	h.report("off", 7)
+
+	if err := h.c.StopAiring("office"); err != nil {
+		t.Fatal(err)
+	}
+	h.c.tick()
+	h.wantKinds("restore")
+	cmd := h.f.sent[0]
+	if *cmd.Mode != ModeAuto || *cmd.Target != 20 {
+		t.Fatalf("restored %s/%v, want auto/20", *cmd.Mode, *cmd.Target)
+	}
+	h.report("auto", 20)
+	if got := h.status().AiringState; got != AiringNone {
+		t.Fatalf("state = %s, want none", got)
+	}
+}
+
+// A report sent before the off took effect mustn't end the retries: if the restore
+// was lost and the off arrives, the room would stay off for good.
+func TestReportFromBeforeOffDoesntConfirmARestore(t *testing.T) {
+	h := newHarness(t)
+	h.report("heat", 20)
+	h.startAiring(time.Hour)
+	if err := h.c.StopAiring("office"); err != nil {
+		t.Fatal(err)
+	}
+	h.c.tick()
+	h.wantKinds("off", "restore")
+
+	h.report("heat", 20)
+	if got := h.status().AiringState; got != AiringRestoring {
+		t.Fatalf("state = %s, want still restoring", got)
+	}
+
+	// The off landed and the restore was lost, so the retry fixes it.
+	h.report("off", 7)
+	h.advance(retryInterval)
+	h.wantKinds("off", "restore", "restore")
+	h.report("heat", 20)
+	if got := h.status().AiringState; got != AiringNone {
+		t.Fatalf("state = %s, want none", got)
+	}
+}
+
+// The off itself was lost: the thermostat stays on, and the wait runs out.
+func TestRestoreIsConfirmedOnceTheWaitRunsOut(t *testing.T) {
+	h := newHarness(t)
+	h.report("heat", 20)
+	h.startAiring(time.Hour)
+	if err := h.c.StopAiring("office"); err != nil {
+		t.Fatal(err)
+	}
+	h.c.tick()
+
+	h.advance(retryInterval)
+	h.report("heat", 20)
+	if got := h.status().AiringState; got != AiringNone {
+		t.Fatalf("state = %s, want none", got)
+	}
+}
+
+// Saved first: a crash during the publish must leave a record of the airing.
+func TestAiringIsSavedBeforeOffIsSent(t *testing.T) {
+	store := &fakeStore{}
+	h := newHarnessWithStore(t, store)
+	h.report("heat", 20)
+	h.c.tick()
+
+	var savedAtSend *RoomRecord
+	h.c.thermostat = thermostatFunc(func(string, Command) error {
+		rec := store.records["office"]
+		savedAtSend = &rec
+		return nil
+	})
+	if err := h.c.StartAiring("office", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	h.c.tick()
+	if savedAtSend == nil || savedAtSend.AiringUntil == nil {
+		t.Fatalf("saved at send = %+v, want the airing", savedAtSend)
+	}
+}
+
+type thermostatFunc func(string, Command) error
+
+func (f thermostatFunc) Apply(trv string, cmd Command) error { return f(trv, cmd) }
 
 func TestStopAiringWithoutAiringDoesNothing(t *testing.T) {
 	h := newHarness(t)
@@ -651,6 +770,22 @@ func TestRestartAfterTheEndTimeRestoresAtStart(t *testing.T) {
 	again.now = h.now.Add(time.Hour)
 	again.c.tick()
 	again.wantKinds("restore")
+}
+
+func TestRestartKeepsTheLastOnMode(t *testing.T) {
+	store := &fakeStore{}
+	h := newHarnessWithStore(t, store)
+	h.report("auto", 20)
+	h.report("off", 7)
+
+	again := newHarnessWithStore(t, store)
+	again.report("off", 7)
+	again.startAiring(time.Minute)
+	again.advance(time.Minute)
+	again.wantKinds("restore")
+	if got := *again.f.sent[0].Mode; got != ModeAuto {
+		t.Fatalf("restored %s, want auto", got)
+	}
 }
 
 func TestRestartKeepsAHeldTarget(t *testing.T) {

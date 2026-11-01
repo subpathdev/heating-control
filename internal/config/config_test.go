@@ -22,6 +22,7 @@ func TestParseRejects(t *testing.T) {
 		"no rooms":  `broker: x`,
 		"no trv":    `{broker: x, rooms: [{id: a, label: A}]}`,
 		"duplicate": `{broker: x, rooms: [{id: a, label: A, trv: t}, {id: a, label: B, trv: u}]}`,
+		"same trv":  `{broker: x, rooms: [{id: a, label: A, trv: t}, {id: b, label: B, trv: t}]}`,
 		"bad range": `{broker: x, minTarget: 25, maxTarget: 10, rooms: [{id: a, label: A, trv: t}]}`,
 	}
 	for name, in := range tests {

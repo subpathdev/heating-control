@@ -64,6 +64,7 @@ func parse(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("at least one room is required")
 	}
 	seen := map[string]bool{}
+	seenTRV := map[string]bool{}
 	for _, r := range cfg.Rooms {
 		if r.ID == "" || r.Label == "" || r.TRV == "" {
 			return nil, fmt.Errorf("room %q needs id, label and trv", r.ID)
@@ -72,6 +73,10 @@ func parse(data []byte) (*Config, error) {
 			return nil, fmt.Errorf("duplicate room id %q", r.ID)
 		}
 		seen[r.ID] = true
+		if seenTRV[r.TRV] {
+			return nil, fmt.Errorf("thermostat %q is in more than one room", r.TRV)
+		}
+		seenTRV[r.TRV] = true
 	}
 	return &cfg, nil
 }

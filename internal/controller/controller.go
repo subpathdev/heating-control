@@ -101,6 +101,7 @@ type RoomRecord struct {
 	AiringUntil *time.Time
 	RestoreMode Mode
 	Restoring   bool
+	LastOnMode  Mode
 }
 
 // ThermostatState is a thermostat's report. Fields it didn't include are nil.
@@ -191,18 +192,23 @@ func (c *Controller) tick() {
 		if send {
 			r.attempts++
 			r.lastSent = now
+			r.sentTarget = cmd.Target
 		}
 		c.mu.Unlock()
 
 		if !send {
 			continue
 		}
+		// Saved first: after a crash a room that is off with no record would stay
+		// off, because only rooms with a record get restored.
+		c.save()
 		if err := c.thermostat.Apply(r.cfg.TRV, cmd); err != nil {
 			log.Printf("%s: %s: %v", r.cfg.TRV, cmd.Kind(), err)
 			// Never reached the thermostat, so it says nothing about it.
 			c.mu.Lock()
 			r.attempts--
 			r.publishFailed = true
+			r.sentTarget = nil
 			c.mu.Unlock()
 			continue
 		}
@@ -294,15 +300,15 @@ func (c *Controller) StartAiring(id string, d time.Duration) error {
 	return nil
 }
 
-// StopAiring ends airing now. It does nothing if the room isn't airing.
+// StopAiring ends airing now. If the room isn't airing but its thermostat is
+// off, it turns it back on. Otherwise it does nothing.
 func (c *Controller) StopAiring(id string) error {
 	r := c.find(id)
 	if r == nil {
 		return fmt.Errorf("%w: %q", ErrUnknownRoom, id)
 	}
 	c.mu.Lock()
-	if r.airingUntil != nil {
-		r.endAiring()
+	if r.heatAgain(c.now()) {
 		c.changed = true
 	}
 	c.mu.Unlock()
