@@ -2,6 +2,8 @@
 
 A small web page to adjust the heating per room from a phone on the home network: change a room's target temperature, or mark a window as open so the room doesn't heat. It controls Sonoff TRVZB thermostats through Zigbee2MQTT.
 
+<img src="docs/screenshot.png" alt="The heating page on a phone: Office and Bedroom cards, each with the room temperature, whether it is heating, the target and buttons to change it" width="360">
+
 ## Airing
 
 "Airing 15/30/60" sends `system_mode: off`. When the time is up, or on "Heat again", the room gets back the mode and target from before.
