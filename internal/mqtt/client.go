@@ -30,14 +30,14 @@ type Client struct {
 	client paho.Client
 }
 
-// New connects to the broker in the background and keeps reconnecting. Because
-// state messages aren't retained, Start asks each thermostat for its state
-// after every connect.
+// New returns a Client. Nothing connects until Start.
 func New(cfg *config.Config) *Client {
 	return &Client{cfg: cfg, base: cfg.BaseTopic}
 }
 
-// Start connects and delivers device reports to sink.
+// Start connects in the background, keeps reconnecting and delivers device
+// reports to sink. Because state messages aren't retained, it asks each
+// thermostat for its state after every connect.
 func (c *Client) Start(sink Sink) {
 	opts := paho.NewClientOptions().
 		AddBroker(c.cfg.Broker).
