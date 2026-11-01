@@ -15,6 +15,23 @@ The service keeps no saved state, so a restart during airing forgets it: **that 
 - Commands repeat until the thermostat confirms them, every 30 s for about 5 minutes. A target then gives up and shows the thermostat's value. Off and heat-again keep trying every 5 minutes and show a problem on the page, because giving up would mean heating with the window open or a cold room.
 - A thermostat that is off with no airing is left alone, because it can turn itself off and come back. The page offers "Heat again" for it.
 
+## Requirements
+
+| Needs | Why | Tested with |
+| :--- | :--- | :--- |
+| MQTT broker | How the service reaches Zigbee2MQTT. It connects without a username or TLS, because those aren't supported yet | Mosquitto 2.1 |
+| [Zigbee2MQTT](https://www.zigbee2mqtt.io/) | Talks to the thermostats. The service uses `<baseTopic>/<trv>` for state, and `/set` and `/get` for commands, with device friendly names from the config | 2.14 |
+| Sonoff TRVZB thermostats | The service relies on how they behave, see the comment in [`controller.go`](internal/controller/controller.go), so **other models may not work** | Firmware 1.3.0 |
+
+Optional:
+
+- **A room sensor** in Zigbee2MQTT that reports `temperature`, for the temperature on the page. Without one, the page shows the thermostat's value. A thermostat only regulates on a room sensor if something else feeds it `external_temperature_input`: this service doesn't.
+- **Prometheus Operator**, for the chart's `serviceMonitor.enabled`. `/metrics` works without it.
+
+The chart needs Kubernetes and Helm. Without them, run the binary or image with `-config <file>`, using the same settings as `config` in the chart's [`values.yaml`](charts/heating-control/values.yaml).
+
+Nothing else is needed: no database, and no storage, because all state is in memory.
+
 ## Deployment
 
 The Helm chart in [`charts/heating-control`](charts/heating-control) is published with every release as `oci://ghcr.io/subpathdev/charts/heating-control`. Set `config.broker` and `config.rooms`; adding a room is one more entry in `config.rooms`. Run one replica only, and give any other instance its own `config.clientId`: a second client with the same ID disconnects the first.
