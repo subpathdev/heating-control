@@ -4,6 +4,8 @@ A small web page to adjust the heating per room from a phone on the home network
 
 <img src="docs/screenshot.png" alt="The heating page at phone width: a green All OK status in the top right, then Office and Bedroom cards, each with the room temperature, whether it is heating, the target, buttons to change it, and Air 5, 15, 30 and 60 buttons" width="375">
 
+The page can be added to the phone's home screen with its own icon: "Share → Add to Home Screen" in Safari, "Add to home screen" in Chrome. On iPhone it then opens full-screen. Android Chrome only installs a page as an app over HTTPS, so over plain HTTP it adds a shortcut, which may open as a normal browser tab. The page has no service worker and caches nothing, so it always shows the live state and only works on the home network. Offline use or notifications would need HTTPS too. The icons are drawn by `internal/web/icon.go`: change it and run `go generate ./...`.
+
 ## Airing
 
 "Air 5/15/30/60" sends `system_mode: off` for that many minutes, with 5 for a quick Stoßlüften. When the time is up, or on "Heat again", the room gets back the mode and target from before.

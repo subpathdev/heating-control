@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +87,64 @@ func TestPageIsServed(t *testing.T) {
 	rec := get(t, "/")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<title>") {
 		t.Fatalf("status %d, body %.60q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHomeScreenFilesAreServed(t *testing.T) {
+	page := get(t, "/").Body.String()
+	for _, link := range []string{`rel="manifest" href="manifest.webmanifest"`, `rel="apple-touch-icon" href="apple-touch-icon.png"`} {
+		if !strings.Contains(page, link) {
+			t.Errorf("page has no %s", link)
+		}
+	}
+	// Offline caching would show old values, and needs HTTPS anyway.
+	if strings.Contains(page, "serviceWorker") {
+		t.Error("page registers a service worker")
+	}
+
+	rec := get(t, "/manifest.webmanifest")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/manifest+json" {
+		t.Errorf("Content-Type = %q", got)
+	}
+	var manifest struct {
+		StartURL string `json:"start_url"`
+		Display  string `json:"display"`
+		Icons    []struct {
+			Src   string `json:"src"`
+			Sizes string `json:"sizes"`
+		} `json:"icons"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.StartURL != "/" || manifest.Display != "standalone" {
+		t.Errorf("manifest = %+v", manifest)
+	}
+
+	icons := map[string]string{"apple-touch-icon.png": "180x180"}
+	var sizes []string
+	for _, icon := range manifest.Icons {
+		icons[icon.Src] = icon.Sizes
+		sizes = append(sizes, icon.Sizes)
+	}
+	for _, want := range []string{"192x192", "512x512"} {
+		if !slices.Contains(sizes, want) {
+			t.Errorf("manifest has no %s icon", want)
+		}
+	}
+	for src, sizes := range icons {
+		rec := get(t, "/"+src)
+		cfg, err := png.DecodeConfig(rec.Body)
+		if rec.Code != http.StatusOK || err != nil {
+			t.Errorf("%s: status %d, %v", src, rec.Code, err)
+			continue
+		}
+		if got := fmt.Sprintf("%dx%d", cfg.Width, cfg.Height); got != sizes {
+			t.Errorf("%s is %s, want %s", src, got, sizes)
+		}
 	}
 }
 

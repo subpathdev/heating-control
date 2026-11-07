@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io/fs"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"strings"
@@ -18,8 +19,17 @@ import (
 	"github.com/subpathdev/heating-control/internal/health"
 )
 
+//go:generate go run icon.go
+
 //go:embed static
 var static embed.FS
+
+// The image is FROM scratch, so there's no /etc/mime.types to look this up in.
+func init() {
+	if err := mime.AddExtensionType(".webmanifest", "application/manifest+json"); err != nil {
+		panic(err)
+	}
+}
 
 const maxBodyBytes = 1024
 
