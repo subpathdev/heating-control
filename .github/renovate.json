@@ -1,6 +1,58 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    "customManagers:githubActionsVersions"
+  ],
+  "timezone": "Europe/Berlin",
   "automerge": false,
-  "timezone": "Europe/Berlin"
+  "platformAutomerge": false,
+  "automergeType": "pr",
+  "automergeSchedule": ["* 9-18 * * *"],
+  "schedule": ["* 0-7 * * 6"],
+  "updateNotScheduled": false,
+  "minimumReleaseAge": "3 days",
+  "postUpdateOptions": ["gomodTidy"],
+  "packageRules": [
+    {
+      "description": "CI tooling (Actions, golangci-lint, helm in ci.yaml) never reaches the flat: automerge non-major updates and digest pins once CI passes",
+      "matchManagers": ["github-actions", "custom.regex"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "automerge": true
+    },
+    {
+      "description": "golang build image patches are mostly security fixes; CI builds and tests the image, and chore(deps) does not cut a release",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["golang"],
+      "matchUpdateTypes": ["patch", "digest"],
+      "automerge": true
+    },
+    {
+      "description": "Go module patches (metrics, OpenAPI runtime, yaml) in one weekly PR, so at most one release a week. Deploying it stays a manual PR in smart-home",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch"],
+      "matchPackageNames": ["!github.com/eclipse/paho.mqtt.golang"],
+      "groupName": "go modules (patch)",
+      "automerge": true
+    },
+    {
+      "description": "The MQTT client carries every TRV command: always manual, and a week for regressions to show up",
+      "matchPackageNames": ["github.com/eclipse/paho.mqtt.golang"],
+      "automerge": false,
+      "minimumReleaseAge": "7 days",
+      "addLabels": ["heating-path"]
+    },
+    {
+      "description": "The Go directive and toolchain change compiler and runtime behaviour: manual",
+      "matchDepNames": ["go", "toolchain"],
+      "automerge": false
+    },
+    {
+      "description": "Majors are always manual",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "addLabels": ["major"]
+    }
+  ]
 }

@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # renovate: datasource=npm depName=renovate
+  RENOVATE_VERSION: 44.253.4
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -49,6 +53,17 @@ jobs:
           version: v4.3.2
       - run: helm lint charts/heating-control -f charts/heating-control/ci-values.yaml
       - run: helm template test charts/heating-control -f charts/heating-control/ci-values.yaml
+
+  # --strict also fails when Renovate would want to migrate the config.
+  renovate-config:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npx --yes --package "renovate@${RENOVATE_VERSION}" -- renovate-config-validator --strict
 
   # Builds without pushing, so a broken Dockerfile shows up in the PR.
   image:
